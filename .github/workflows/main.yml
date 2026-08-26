@@ -46,8 +46,8 @@ jobs:
         # 1. Agar koi conflicting migrations hain toh unhe automatically merge karein
         python manage.py makemigrations --merge --no-input || true
 
-        # 2. Duplicate entry error se bachne ke liye flush ki bajaye migrate --fake-initial use karein
-        python manage.py migrate --fake-initial
+        # 2. Missing tables ya conflicting state ko handle karne ke liye pehle fake migrate karein ya phir regular migrate
+        python manage.py migrate --fake-initial || python manage.py migrate --run-syncdb
 
         # 3. Fresh superuser create karein using Environment Secrets
         python manage.py shell -c "
