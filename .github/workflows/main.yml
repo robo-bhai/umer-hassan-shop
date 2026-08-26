@@ -47,13 +47,13 @@ jobs:
         python manage.py makemigrations --merge --no-input || true
         
         # 2. Agar table pehle se mojood hone ya missing hone ka error aaye toh handle karein
-        if python manage.py migrate --fake-initial; then
-            echo "✅ Database migrated successfully!"
+        if python manage.py migrate; then
+            echo "✅ Database migrated successfully without errors!"
         else
-            echo "⚠️ Migration failed due to existing tables! Trying with --fake..."
-            python manage.py migrate --fake || true
+            echo "⚠️ Migration failed! Trying with --fake-initial and retry..."
+            python manage.py migrate --fake-initial || true
             if python manage.py migrate; then
-                echo "✅ Database migrated successfully after fake fallback!"
+                echo "✅ Database migrated successfully after fallback!"
             else
                 echo "⚠️ Migration still failed! Flushing database completely..."
                 python manage.py flush --no-input || true
