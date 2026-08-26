@@ -1,0 +1,5 @@
+django
+pymysql
+django-dbbackup
+django-import-export
+django-axes
