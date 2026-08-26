@@ -3,7 +3,7 @@ name: Django Server Runner & Cloudflare Tunnel
 on:
   push:
     branches: [ "main", "master" ]
-  workflow_dispatch:  # Manual trigger ke liye
+  workflow_dispatch:
 
 jobs:
   run-server:
@@ -43,17 +43,26 @@ jobs:
         DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
-        # 1. Professional approach: Database drop nahi karna, sirf safe migrations run karni hain
-        echo "Checking database connection and running pending migrations safely..."
+        # 1. First check which migrations are pending
+        echo "Checking migration status..."
+        python manage.py showmigrations --plan
         
-        python manage.py makemigrations --merge --no-input || true
+        # 2. Fake apply all existing migrations to mark them as done
+        echo "Fake applying all existing migrations..."
+        python manage.py migrate --fake
         
-        # Safe initial migration sync taake existing tables par error na aaye
-        python manage.py migrate --fake-initial || true
+        # 3. Now create migrations for any new changes without faking
+        echo "Creating new migrations if needed..."
+        python manage.py makemigrations --no-input || true
+        
+        # 4. Apply only NEW migrations, skip existing ones
+        echo "Applying new migrations only..."
         python manage.py migrate --no-input
+        
+        # 5. Handle axes migrations separately (if exists)
         python manage.py migrate axes --no-input || true
 
-        # 2. Schema Compatibility Check (e.g., auth_user last_login NULL constraint fix if needed)
+        # 6. Schema Compatibility Check (auth_user last_login NULL constraint fix if needed)
         python -c "
         import os, pymysql
         pymysql.install_as_MySQLdb()
@@ -69,7 +78,7 @@ jobs:
                 print('Schema check note:', e)
         "
 
-        # 3. Ensure Superuser exists (Agar pehle se hai toh update/ignore karega, data safe rahega)
+        # 7. Ensure Superuser exists
         python -c "
         import os
         import pymysql
