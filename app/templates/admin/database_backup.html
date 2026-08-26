@@ -1,0 +1,190 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<h1>Database Backup & Restore</h1>
+
+<!-- Progress Bar & Loader -->
+<div id="progress-container" style="display: none; text-align: center;">
+    <p id="progress-text" style="font-weight: bold;">Processing... Please wait (0%)</p>
+    <div id="loader" class="loader"></div>
+    <div id="progress-bar-container">
+        <div id="progress-bar"></div>
+    </div>
+</div>
+
+<!-- Buttons -->
+<div style="margin-bottom: 20px;">
+    <a href="{% url 'admin:index' %}" class="button back-button">⬅ Back to Admin</a>
+</div>
+
+<div style="margin-bottom: 20px;">
+    <a href="{% url 'admin:backup-db' %}" class="button action-button"
+       onclick="startProgress('Backup'); return true;">🔄 Backup Database</a>
+    
+    <a href="#" class="button action-button restore-btn">♻ Restore Database</a>
+</div>
+
+{% if messages %}
+    <ul class="messagelist">
+        {% for message in messages %}
+            <li class="{{ message.tags }}">{{ message }}</li>
+        {% endfor %}
+    </ul>
+{% endif %}
+
+<!-- Backup Files List -->
+<h2>Available Backup Files</h2>
+{% if backup_files %}
+    <table class="model-table">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>File Name</th>
+                <th>Delete</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for file in backup_files %}
+            <tr>
+                <td>{{ forloop.counter }}</td>
+                <td>{{ file }}</td>
+                <td>
+                    <a href="{% url 'admin:delete-backup' file %}" class="button delete-button"
+                       onclick="return confirm('Are you sure you want to delete {{ file }}?');">❌ Delete</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% else %}
+    <p>No backup files found.</p>
+{% endif %}
+
+<!-- Restore Confirmation Modal -->
+<div id="restore-modal" class="modal">
+    <div class="modal-content">
+        <h2>⚠️ Confirm Restore</h2>
+        <p>Restoring the database will overwrite all current data. Are you sure you want to continue?</p>
+        <button class="button confirm-restore">Yes, Restore</button>
+        <button class="button cancel-restore">Cancel</button>
+    </div>
+</div>
+
+<!-- CSS Styling -->
+<style>
+    /* Progress Bar */
+    #progress-bar-container {
+        width: 100%;
+        background: #ddd;
+        border-radius: 10px;
+        height: 20px;
+        margin: 10px auto;
+        box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    #progress-bar {
+        width: 0%;
+        height: 100%;
+        background: linear-gradient(90deg, #4CAF50, #8BC34A);
+        border-radius: 10px;
+        transition: width 0.4s ease-in-out;
+    }
+    
+    /* Loader (Spinning Circle) */
+    .loader {
+        border: 5px solid #f3f3f3;
+        border-top: 5px solid #4CAF50;
+        border-radius: 50%;
+        width: 30px;
+        height: 30px;
+        animation: spin 1s linear infinite;
+        margin: 10px auto;
+        display: none;
+    }
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+
+    /* Buttons */
+    .button {
+        display: inline-block;
+        padding: 10px 20px;
+        font-size: 14px;
+        color: white;
+        background: #007BFF;
+        border-radius: 5px;
+        text-decoration: none;
+        transition: 0.3s;
+    }
+    .button:hover { background: #0056b3; }
+    .delete-button { background: red; }
+    .delete-button:hover { background: darkred; }
+    .action-button { background: green; }
+    .action-button:hover { background: darkgreen; }
+    .back-button { background: gray; }
+    .back-button:hover { background: black; }
+
+    /* Modal Styling */
+    .modal {
+        display: none;
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0, 0, 0, 0.5);
+        justify-content: center;
+        align-items: center;
+    }
+    .modal-content {
+        background: white;
+        padding: 20px;
+        border-radius: 10px;
+        text-align: center;
+        width: 300px;
+    }
+    .confirm-restore { background: red; color: white; }
+    .cancel-restore { background: gray; color: white; }
+</style>
+
+<!-- JavaScript for Progress Bar & Modal -->
+<script>
+    function startProgress(actionType) {
+        document.getElementById("progress-container").style.display = "block";
+        document.getElementById("loader").style.display = "block";
+        var progress = document.getElementById("progress-bar");
+        var progressText = document.getElementById("progress-text");
+        var width = 0;
+
+        var interval = setInterval(function () {
+            if (width >= 100) {
+                clearInterval(interval);
+                progressText.innerHTML = actionType + " Completed ✅";
+                document.getElementById("loader").style.display = "none";
+                setTimeout(() => {
+                    document.getElementById("progress-container").style.display = "none";
+                }, 1500);
+            } else {
+                width += Math.floor(Math.random() * 10) + 5; // Random Increment
+                if (width > 100) width = 100;
+                progress.style.width = width + "%";
+                progressText.innerHTML = actionType + " in Progress... " + width + "%";
+            }
+        }, 400); // Every 0.4 seconds
+    }
+
+    // Restore Modal
+    document.querySelector(".restore-btn").addEventListener("click", function () {
+        document.getElementById("restore-modal").style.display = "flex";
+    });
+    document.querySelector(".cancel-restore").addEventListener("click", function () {
+        document.getElementById("restore-modal").style.display = "none";
+    });
+    document.querySelector(".confirm-restore").addEventListener("click", function () {
+        document.getElementById("restore-modal").style.display = "none";
+        startProgress("Restore");
+        window.location.href = "{% url 'admin:restore-db' %}";
+    });
+</script>
+
+{% endblock %}
