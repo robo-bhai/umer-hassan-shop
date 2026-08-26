@@ -43,10 +43,13 @@ jobs:
         DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
-        # Duplicate entry error se bachne ke liye flush ki bajaye migrate --fake-initial use karein
+        # 1. Agar koi conflicting migrations hain toh unhe automatically merge karein
+        python manage.py makemigrations --merge --no-input || true
+
+        # 2. Duplicate entry error se bachne ke liye flush ki bajaye migrate --fake-initial use karein
         python manage.py migrate --fake-initial
 
-        # Fresh superuser create karein using Environment Secrets
+        # 3. Fresh superuser create karein using Environment Secrets
         python manage.py shell -c "
         import os
         from django.contrib.auth import get_user_model
