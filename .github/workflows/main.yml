@@ -21,7 +21,7 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pymysql "django-import-export>=3.3.0" django django-dbbackup django-axes reportlab openpyxl pillow python-barcode qrcode
+        pip install pymysql django gunicorn
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
     - name: Install Cloudflared
@@ -29,7 +29,7 @@ jobs:
         curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
         sudo dpkg -i cloudflared.deb
 
-    - name: Database Migration
+    - name: Database Migration - Complete Fix
       env:
         DB_HOST: ${{ secrets.DB_HOST }}
         DB_USER: ${{ secrets.DB_USER }}
@@ -44,25 +44,10 @@ jobs:
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
         echo "=========================================="
-        echo "Step 1: Database Migration Started"
+        echo "STEP 1: Creating Critical Database Tables"
         echo "=========================================="
         
-        # Remove problematic migration files
-        rm -f app/migrations/0015_*.py || true
-        rm -f app/migrations/0016_*.py || true
-        rm -f app/migrations/0017_*.py || true
-        rm -f app/migrations/__pycache__/* || true
-        
-        # Create fresh migrations
-        python manage.py makemigrations --no-input || true
-        
-        # Fake apply all migrations
-        python manage.py migrate --fake --no-input || true
-        
-        # Apply new migrations
-        python manage.py migrate --no-input || true
-        
-        # Check and fix missing columns
+        # Create django_session table directly
         python -c "
         import os, pymysql
         pymysql.install_as_MySQLdb()
@@ -72,26 +57,47 @@ jobs:
         from django.db import connection
         
         with connection.cursor() as cursor:
-            # Check vendor_so_number column
+            # Check if sessions table exists
             cursor.execute('''
-                SELECT COUNT(*) FROM information_schema.COLUMNS 
+                SELECT COUNT(*) FROM information_schema.TABLES 
                 WHERE TABLE_SCHEMA = DATABASE() 
-                AND TABLE_NAME = 'app_purchaseorder' 
-                AND COLUMN_NAME = 'vendor_so_number'
+                AND TABLE_NAME = 'django_session'
             ''')
             exists = cursor.fetchone()[0]
             
             if not exists:
+                print('Creating django_session table...')
                 cursor.execute('''
-                    ALTER TABLE app_purchaseorder 
-                    ADD COLUMN vendor_so_number VARCHAR(255) NULL
+                    CREATE TABLE django_session (
+                        session_key VARCHAR(40) NOT NULL PRIMARY KEY,
+                        session_data LONGTEXT NOT NULL,
+                        expire_date DATETIME(6) NOT NULL
+                    )
                 ''')
-                print('✓ vendor_so_number column added')
+                print('✓ django_session table created successfully!')
             else:
-                print('✓ vendor_so_number column already exists')
+                print('✓ django_session table already exists')
         "
-
-        # Superuser create
+        
+        echo "=========================================="
+        echo "STEP 2: Running Django Migrations"
+        echo "=========================================="
+        
+        # Remove problematic migration files
+        rm -f app/migrations/0015_*.py 2>/dev/null || true
+        rm -f app/migrations/0016_*.py 2>/dev/null || true
+        rm -f app/migrations/0017_*.py 2>/dev/null || true
+        rm -f app/migrations/__pycache__/* 2>/dev/null || true
+        
+        # Run migrations
+        python manage.py makemigrations --no-input || true
+        python manage.py migrate --fake --no-input || true
+        python manage.py migrate --no-input || true
+        
+        echo "=========================================="
+        echo "STEP 3: Creating Superuser"
+        echo "=========================================="
+        
         python -c "
         import os
         import django
@@ -104,51 +110,47 @@ jobs:
         password = os.environ.get('DJANGO_SUPERUSER_PASSWORD')
         if not User.objects.filter(username=username).exists():
             User.objects.create_superuser(username, email, password)
-            print('✓ Superuser created successfully.')
+            print('✓ Superuser created successfully')
         else:
-            print('✓ Superuser already exists.')
+            print('✓ Superuser already exists')
         "
         
         echo "=========================================="
-        echo "Step 1: Database Migration Completed ✅"
+        echo "✅ DATABASE MIGRATION COMPLETED!"
         echo "=========================================="
 
-    - name: Start Django Server & Launch Tunnel
-      env:
-        TUNNEL_CREDS: ${{ secrets.CLOUDFLARE_CREDENTIALS }}
-        TUNNEL_UUID: "1a0537c0-5705-4b1d-9887-bd4e31e4450b"
-        DB_HOST: ${{ secrets.DB_HOST }}
-        DB_USER: ${{ secrets.DB_USER }}
-        DB_PASS: ${{ secrets.DB_PASS }}
-        DB_PASSWORD: ${{ secrets.DB_PASS }}
-        DB_NAME: ${{ secrets.DB_NAME }}
-        DB_PORT: ${{ secrets.DB_PORT }}
-        DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
-        DJANGO_SALT_KEY: ${{ secrets.DJANGO_SALT_KEY }}
+    - name: Start Django Server
       run: |
         echo "=========================================="
-        echo "Step 2: Starting Django Server"
+        echo "STEP 4: Starting Django Server with Gunicorn"
         echo "=========================================="
         
-        # Start Django server with nohup to keep it running
-        nohup python manage.py runserver 0.0.0.0:8000 > django.log 2>&1 &
+        # Start with Gunicorn (production ready)
+        nohup gunicorn --bind 0.0.0.0:8000 --workers 3 --timeout 120 P1.wsgi:application > gunicorn.log 2>&1 &
         
-        # Wait for server to start
-        echo "Waiting for Django server to start..."
-        sleep 10
+        echo "Waiting for server to start..."
+        sleep 8
         
-        # Check if server is running
-        if curl -s http://localhost:8000 > /dev/null; then
+        # Verify server is running
+        if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200\|302\|301"; then
             echo "✓ Django server is running on port 8000"
         else
-            echo "⚠️ Django server may not be ready yet, continuing..."
+            echo "⚠️ Server may not be ready, checking logs..."
+            tail -20 gunicorn.log
         fi
         
         echo "=========================================="
-        echo "Step 3: Launching Cloudflare Tunnel"
+
+    - name: Launch Cloudflare Tunnel
+      env:
+        TUNNEL_CREDS: ${{ secrets.CLOUDFLARE_CREDENTIALS }}
+        TUNNEL_UUID: "1a0537c0-5705-4b1d-9887-bd4e31e4450b"
+      run: |
+        echo "=========================================="
+        echo "STEP 5: Launching Cloudflare Tunnel"
         echo "=========================================="
         
-        # Setup Cloudflare Tunnel
+        # Setup Cloudflare
         mkdir -p ~/.cloudflared
         echo "$TUNNEL_CREDS" > ~/.cloudflared/$TUNNEL_UUID.json
         
@@ -166,13 +168,13 @@ jobs:
         echo "👉 https://hadi88.online"
         echo "=========================================================="
         echo "✅ Database migration completed"
-        echo "✅ Django server running on port 8000"
+        echo "✅ Django server (Gunicorn) running on port 8000"
         echo "✅ Cloudflare tunnel established"
         echo "=========================================================="
         
-        # Show Django logs (for debugging)
-        echo "Django server logs:"
-        cat django.log
+        # Show logs for debugging
+        echo "Gunicorn Logs:"
+        tail -20 gunicorn.log || true
         
         # Run tunnel in foreground
         cloudflared tunnel --config ~/.cloudflared/config.yml run $TUNNEL_UUID

@@ -29,6 +29,9 @@ SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Strict'  
 SESSION_SAVE_EVERY_REQUEST = True
 
+# ✅ CRITICAL FIX: Session Engine explicitly set
+SESSION_ENGINE = 'django.contrib.sessions.backends.db'
+
 ALLOWED_HOSTS = ['*']
 
 # Cloudflare Tunnels aur External Proxies ke liye CSRF Trusted Origins Configuration
@@ -38,6 +41,7 @@ CSRF_TRUSTED_ORIGINS = [
     'https://*.loca.lt',
     'http://localhost:8000',
     'http://127.0.0.1:8000',
+    'https://hadi88.online',  # ✅ Added your domain
 ]
 
 # Cloudflare Reverse Proxy Headers Fix
@@ -49,7 +53,7 @@ INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
-    'django.contrib.sessions',
+    'django.contrib.sessions',  # ✅ Sessions app enabled
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'ceo_module',
@@ -57,31 +61,23 @@ INSTALLED_APPS = [
     'app', 
     'dbbackup',  
     'import_export',  
-    'axes',
+    # 'axes',  # ✅ Completely disabled
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',  # ✅ Session middleware enabled
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    # Axes temporarily disabled to avoid table issues
-    # 'axes.middleware.AxesMiddleware',
+    # Axes completely removed
 ]
 
 AUTHENTICATION_BACKENDS = [
-    # Axes temporarily disabled
-    # 'axes.backends.AxesStandaloneBackend',
-    'django.contrib.auth.backends.ModelBackend',
+    'django.contrib.auth.backends.ModelBackend',  # ✅ Only ModelBackend
 ]
-
-# Axes Configuration - Disabled temporarily
-AXES_ENABLED = False
-AXES_FAILURE_LIMIT = 5  
-AXES_COOLOFF_TIME = 1  
 
 ROOT_URLCONF = 'P1.urls'
 
