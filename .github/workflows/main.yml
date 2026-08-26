@@ -48,7 +48,8 @@ jobs:
         
         python manage.py makemigrations --merge --no-input || true
         
-        # Safe migration run (agar koi table missing hogi jaise django_session, toh woh khud create ho jayegi)
+        # Safe initial migration sync taake existing tables par error na aaye
+        python manage.py migrate --fake-initial || true
         python manage.py migrate --no-input
         python manage.py migrate axes --no-input || true
 
