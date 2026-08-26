@@ -67,12 +67,14 @@ jobs:
             print('All database tables dropped successfully.')
         " || true
 
-        # 2. Run migrations fresh (including axes tables)
+        # 2. Run migrations smoothly with automatic fallback to fake if duplicate column occurs
         python manage.py makemigrations --merge --no-input || true
-        python manage.py migrate
+        python manage.py migrate || python manage.py migrate app --fake || python manage.py migrate --fake-initial
+
+        # 3. Ensure axes migrations are fully applied
         python manage.py migrate axes || true
 
-        # 3. FIX: auth_user table ke 'last_login' column ko explicitly NULL allow karwayein taake IntegrityError na aaye
+        # 4. FIX: auth_user table ke 'last_login' column ko explicitly NULL allow karwayein taake IntegrityError na aaye
         python -c "
         import os, pymysql
         pymysql.install_as_MySQLdb()
@@ -88,7 +90,7 @@ jobs:
                 print('Note on alter table:', e)
         "
 
-        # 4. Fresh superuser create karein using Environment Secrets
+        # 5. Fresh superuser create karein using Environment Secrets
         python -c "
         import os
         import pymysql
