@@ -46,6 +46,9 @@ jobs:
         # 1. Pehle normal migration run karne ki koshish karein
         python manage.py makemigrations --merge --no-input || true
         
+        # 2. Agar table missing ya migration mismatch ka masla ho toh app state ko handle karein
+        python manage.py migrate app zero --fake || true
+
         if python manage.py migrate; then
             echo "✅ Database migrated successfully without errors!"
         else
@@ -56,7 +59,7 @@ jobs:
             python manage.py migrate
         fi
 
-        # 2. Fresh superuser create karein using Environment Secrets
+        # 3. Fresh superuser create karein using Environment Secrets
         python manage.py shell -c "
         import os
         from django.contrib.auth import get_user_model
