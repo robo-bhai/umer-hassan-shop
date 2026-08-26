@@ -6,21 +6,17 @@ EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = '1@gmail.com'  # Your Gmail Address
-EMAIL_HOST_PASSWORD = 'ngxm bvjz ttjw gzgu'  # Your App Password (Not Gmail Password)
-
-# For Encryption
-SALT_KEY = '0123456789abcdefghijklmnopqrstuvwxyz'
+EMAIL_HOST_USER = '1@gmail.com'  
+EMAIL_HOST_PASSWORD = 'ngxm bvjz ttjw gzgu'  
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# SECURITY WARNING: keep the secret key used in production secret! (Strictly from Environment/Secrets)
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
-
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-o9%6qc^k0v9!9+qw#l2r))!_@nri4^2ow8qt^n_n)x$_!g8_k#'
+# For Encryption (Strictly from Environment/Secrets)
+SALT_KEY = os.environ.get('DJANGO_SALT_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -28,13 +24,12 @@ DEBUG = True
 # Security Settings
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True  
 SESSION_COOKIE_AGE = 60 * 30  
-SESSION_COOKIE_SECURE = True       # HTTPS par session ko lazim banaen
-SESSION_COOKIE_HTTPONLY = True      # JavaScript session ko access na kar sake
-SESSION_COOKIE_SAMESITE = 'Strict'  # Cross-site attacks (CSRF) se bachao
+SESSION_COOKIE_SECURE = True       
+SESSION_COOKIE_HTTPONLY = True      
+SESSION_COOKIE_SAMESITE = 'Strict'  
 SESSION_SAVE_EVERY_REQUEST = True
 
 ALLOWED_HOSTS = ['*']
-# ALLOWED_HOSTS = ['100.115.147.119', 'localhost']
 
 # Cloudflare Tunnels aur External Proxies ke liye CSRF Trusted Origins Configuration
 CSRF_TRUSTED_ORIGINS = [
@@ -50,12 +45,7 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = True
 USE_X_FORWARDED_PORT = True
 
-
-
 INSTALLED_APPS = [
-    #'admin_interface',
-    #'colorfield',
-    
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -63,15 +53,14 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     
-    'django.contrib.humanize', # For Comma
-    'app', # App
-    'dbbackup',  # django-dbbackup
-    'import_export',  # import_export
+    'django.contrib.humanize', 
+    'app', 
+    'dbbackup',  
+    'import_export',  
     'axes',
 ]
 
 MIDDLEWARE = [
- #   'app.middleware.LicenseMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -87,8 +76,8 @@ AUTHENTICATION_BACKENDS = [
     'django.contrib.auth.backends.ModelBackend',
 ]
 
-AXES_FAILURE_LIMIT = 5  # 5 bar se zyada ghalat password par user block hoga
-AXES_COOLOFF_TIME = 1  # 1 ghante baad dobara koshish ki ijazat hogi
+AXES_FAILURE_LIMIT = 5  
+AXES_COOLOFF_TIME = 1  
 
 ROOT_URLCONF = 'P1.urls'
 
@@ -110,19 +99,7 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'P1.wsgi.application'
 
-
-# Database Configuration
-# https://docs.djangoproject.com/en/5.1/ref/settings/#databases
-
-ssl_ctx = ssl.create_default_context()
-ssl_ctx.check_hostname = False
-ssl_ctx.verify_mode = ssl.CERT_NONE
-import os
-from pathlib import Path
-
-# ... (baqi tamam upper settings same raheingi) ...
-
-# Database Configuration
+# Database Configuration (Environment Variables & Aiven MySQL Support)
 db_host = os.environ.get("DB_HOST") or "mysql-2444d53b-moneymaster370-5b49.g.aivencloud.com"
 db_user = os.environ.get("DB_USER") or "avnadmin"
 db_pass = os.environ.get("DB_PASS") or os.environ.get("DB_PASSWORD") or ""
@@ -147,56 +124,28 @@ DATABASES = {
     }
 }
 
-
-
 # Password validation
-# https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators
-
 AUTH_PASSWORD_VALIDATORS = [
-    {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
-    },
+    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',},
+    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',},
+    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',},
+    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',},
 ]
 
-
-# Internationalization
-# https://docs.djangoproject.com/en/5.1/topics/i18n/
-
 LANGUAGE_CODE = 'en-us'
-#LANGUAGE_CODE = 'ur' 
-
-#TIME_ZONE = 'UTC'
 TIME_ZONE = 'Asia/Karachi'
 
 USE_I18N = True
 USE_L10N = True
-
 USE_TZ = True
-
-
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.1/howto/static-files/
 
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
-# Default primary key field type
-# https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
-
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-
 
 DBBACKUP_STORAGE = 'django.core.files.storage.FileSystemStorage'
 DBBACKUP_STORAGE_OPTIONS = {'location': BASE_DIR / 'dbbackup'}
 DBBACKUP_HOSTNAME = 'geek'
 DBBACKUP_TMP_FILE_MAX_SIZE = 100*1024*1024
-DBBACKUP_CLEANUP_KEEP = 2 # py manage.py dbbackup --clean
+DBBACKUP_CLEANUP_KEEP = 2
