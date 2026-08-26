@@ -1,1 +1,148 @@
-yyh
+name: Django Server Runner & Cloudflare Tunnel
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:  # Manual trigger ke liye
+
+jobs:
+  run-server:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pymysql "django-import-export>=3.3.0" django django-dbbackup django-axes reportlab openpyxl pillow python-barcode qrcode
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+    - name: Install Cloudflared
+      run: |
+        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
+        sudo dpkg -i cloudflared.deb
+
+    - name: Reset Database & Create Fresh Superuser
+      env:
+        DB_HOST: ${{ secrets.DB_HOST }}
+        DB_USER: ${{ secrets.DB_USER }}
+        DB_PASS: ${{ secrets.DB_PASS }}
+        DB_PASSWORD: ${{ secrets.DB_PASS }}
+        DB_NAME: ${{ secrets.DB_NAME }}
+        DB_PORT: ${{ secrets.DB_PORT }}
+        DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+        DJANGO_SALT_KEY: ${{ secrets.DJANGO_SALT_KEY }}
+        DJANGO_SUPERUSER_NAME: ${{ secrets.DJANGO_SUPERUSER_NAME }}
+        DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
+        DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
+      run: |
+        # 1. Safely drop all tables in Aiven MySQL database using a clean Python snippet with PyMySQL
+        python -c "
+        import os
+        import pymysql
+        pymysql.install_as_MySQLdb()
+        from django.db.backends.mysql import base as mysql_base
+        mysql_base.versioncheck = lambda *args, **kwargs: True
+
+        import django
+        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
+        django.setup()
+
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute('SET FOREIGN_KEY_CHECKS = 0;')
+            cursor.execute('SHOW TABLES;')
+            tables = [row[0] for row in cursor.fetchall()]
+            for t in tables:
+                cursor.execute(f'DROP TABLE IF EXISTS \`{t}\`;')
+                print(f'Dropped: {t}')
+            cursor.execute('SET FOREIGN_KEY_CHECKS = 1;')
+            print('All database tables dropped successfully.')
+        " || true
+
+        # 2. Run migrations fresh, aur agar duplicate column ya clash ho toh --fake-initial ya skip handle karein
+        python manage.py makemigrations --merge --no-input || true
+        python manage.py migrate || python manage.py migrate --fake-initial || python manage.py migrate --fake
+
+        # 3. Fresh superuser create karein using Environment Secrets
+        python -c "
+        import os
+        import pymysql
+        pymysql.install_as_MySQLdb()
+        import django
+        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
+        django.setup()
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        username = os.environ.get('DJANGO_SUPERUSER_NAME', 'admin')
+        email = os.environ.get('DJANGO_SUPERUSER_EMAIL', 'admin@example.com')
+        password = os.environ.get('DJANGO_SUPERUSER_PASSWORD')
+        User.objects.filter(username=username).delete()
+        User.objects.create_superuser(username, email, password)
+        print('Superuser created successfully.')
+        "
+
+        echo "=========================================="
+        echo "Database setup & Fresh Superuser ready!"
+        echo "=========================================="
+
+    - name: Launch Permanent Cloudflare Tunnel
+      env:
+        DB_HOST: ${{ secrets.DB_HOST }}
+        DB_USER: ${{ secrets.DB_USER }}
+        DB_PASS: ${{ secrets.DB_PASS }}
+        DB_PASSWORD: ${{ secrets.DB_PASS }}
+        DB_NAME: ${{ secrets.DB_NAME }}
+        DB_PORT: ${{ secrets.DB_PORT }}
+        DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+        DJANGO_SALT_KEY: ${{ secrets.DJANGO_SALT_KEY }}
+        DJANGO_SUPERUSER_NAME: ${{ secrets.DJANGO_SUPERUSER_NAME }}
+        DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
+        DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
+        TUNNEL_CREDS: ${{ secrets.CLOUDFLARE_CREDENTIALS }}
+        TUNNEL_UUID: "1a0537c0-5705-4b1d-9887-bd4e31e4450b"
+      run: |
+        # Background mein Django server start karein
+        python manage.py runserver 0.0.0.0:8000 &
+        sleep 3
+
+        # Cloudflare Tunnel directory setup
+        mkdir -p ~/.cloudflared
+        echo "$TUNNEL_CREDS" > ~/.cloudflared/$TUNNEL_UUID.json
+
+        # Config File Create Karein
+        cat <<EOF > ~/.cloudflared/config.yml
+        tunnel: $TUNNEL_UUID
+        credentials-file: /home/runner/.cloudflared/$TUNNEL_UUID.json
+        ingress:
+          - hostname: hadi88.online
+            service: http://localhost:8000
+          - service: http_status:404
+        EOF
+
+        STATIC_URL="https://hadi88.online"
+
+        # Send Alert to ntfy
+        curl -s -X POST https://ntfy.sh/lev_nasiiar_link_988 \
+          -H "Title: 🚀 Live Django Application Active" \
+          -H "Click: $STATIC_URL" \
+          -H "Priority: high" \
+          -H "Tags: rocket,link" \
+          -d "Your static application is live at: $STATIC_URL"
+
+        echo "=========================================================="
+        echo "🚀 ACCESS YOUR DJANGO APP HERE:"
+        echo "👉 $STATIC_URL"
+        echo "=========================================================="
+        echo "🔑 Admin Username and Password are securely loaded from GitHub Secrets."
+        echo "=========================================================="
+
+        # Permanent Tunnel ko FOREGROUND mein run karein taake action active rahe
+        cloudflared tunnel --config ~/.cloudflared/config.yml run $TUNNEL_UUID
