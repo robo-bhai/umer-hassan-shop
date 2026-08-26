@@ -67,14 +67,12 @@ jobs:
             print('All database tables dropped successfully.')
         " || true
 
-        # 2. Run migrations smoothly with automatic fallback to fake if duplicate column occurs
+        # 2. Run all migrations completely so django_session, auth, and app tables are properly created
         python manage.py makemigrations --merge --no-input || true
-        python manage.py migrate || python manage.py migrate app --fake || python manage.py migrate --fake-initial
+        python manage.py migrate --no-input
+        python manage.py migrate axes --no-input || true
 
-        # 3. Ensure axes migrations are fully applied
-        python manage.py migrate axes || true
-
-        # 4. FIX: auth_user table ke 'last_login' column ko explicitly NULL allow karwayein taake IntegrityError na aaye
+        # 3. FIX: auth_user table ke 'last_login' column ko explicitly NULL allow karwayein taake IntegrityError na aaye
         python -c "
         import os, pymysql
         pymysql.install_as_MySQLdb()
@@ -90,7 +88,7 @@ jobs:
                 print('Note on alter table:', e)
         "
 
-        # 5. Fresh superuser create karein using Environment Secrets
+        # 4. Fresh superuser create karein using Environment Secrets
         python -c "
         import os
         import pymysql
