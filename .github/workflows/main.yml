@@ -67,9 +67,10 @@ jobs:
             print('All database tables dropped successfully.')
         " || true
 
-        # 2. Run migrations fresh, aur agar duplicate column ya clash ho toh --fake-initial ya skip handle karein
+        # 2. Run migrations fresh (including axes tables)
         python manage.py makemigrations --merge --no-input || true
-        python manage.py migrate || python manage.py migrate --fake-initial || python manage.py migrate --fake
+        python manage.py migrate
+        python manage.py migrate axes || true
 
         # 3. FIX: auth_user table ke 'last_login' column ko explicitly NULL allow karwayein taake IntegrityError na aaye
         python -c "
