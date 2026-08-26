@@ -102,21 +102,36 @@ WSGI_APPLICATION = 'P1.wsgi.application'
 ssl_ctx = ssl.create_default_context()
 ssl_ctx.check_hostname = False
 ssl_ctx.verify_mode = ssl.CERT_NONE
+import os
+from pathlib import Path
+
+# ... (baqi tamam upper settings same raheingi) ...
+
+# Database Configuration
+db_host = os.environ.get("DB_HOST") or "mysql-2444d53b-moneymaster370-5b49.g.aivencloud.com"
+db_user = os.environ.get("DB_USER") or "avnadmin"
+db_pass = os.environ.get("DB_PASS") or os.environ.get("DB_PASSWORD") or ""
+db_name = os.environ.get("DB_NAME") or "defaultdb"
+db_port = int(os.environ.get("DB_PORT") or "12300")
 
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': os.environ.get("DB_NAME", "defaultdb"),
-        'USER': os.environ.get("DB_USER", "avnadmin"),
-        'PASSWORD': os.environ.get("DB_PASS") or os.environ.get("DB_PASSWORD", ""),
-        'HOST': os.environ.get("DB_HOST", "mysql-2444d53b-moneymaster370-5b49.g.aivencloud.com"),
-        'PORT': os.environ.get("DB_PORT", "12300"),
+        'NAME': db_name,
+        'USER': db_user,
+        'PASSWORD': db_pass,
+        'HOST': db_host,
+        'PORT': db_port,
         'OPTIONS': {
-            'ssl': ssl_ctx,
+            'ssl': {
+                'check_hostname': False,
+            },
             'connect_timeout': 30,
+            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
         },
     }
 }
+
 
 
 # Password validation
