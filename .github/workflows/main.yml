@@ -1,13 +1,12 @@
-name: Django CI & Database Migration
+name: Django Server Runner & Cloudflare Tunnel
 
 on:
   push:
     branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
+  workflow_dispatch:  # Manual trigger ke liye
 
 jobs:
-  build-and-test:
+  run-server:
     runs-on: ubuntu-latest
 
     steps:
@@ -25,6 +24,11 @@ jobs:
         pip install django pymysql mysqlclient django-dbbackup django-import-export django-axes reportlab openpyxl pillow
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
+    - name: Install Cloudflared
+      run: |
+        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
+        sudo dpkg -i cloudflared.deb
+
     - name: Run Database Migrations
       env:
         DB_HOST: ${{ secrets.DB_HOST }}
@@ -34,10 +38,9 @@ jobs:
         DB_NAME: ${{ secrets.DB_NAME }}
         DB_PORT: ${{ secrets.DB_PORT }}
       run: |
-        python manage.py makemigrations
         python manage.py migrate
 
-    - name: Run Django Checks
+    - name: Start Django & Cloudflare Tunnel (3 Hours)
       env:
         DB_HOST: ${{ secrets.DB_HOST }}
         DB_USER: ${{ secrets.DB_USER }}
@@ -46,4 +49,28 @@ jobs:
         DB_NAME: ${{ secrets.DB_NAME }}
         DB_PORT: ${{ secrets.DB_PORT }}
       run: |
-        python manage.py check
+        # Background mein Django server start karein
+        python manage.py runserver 0.0.0.0:8000 &
+        
+        # Cloudflare Tunnel start karein aur output log mein save karein
+        cloudflared tunnel --url http://localhost:8000 > cloudflared.log 2>&1 &
+        
+        echo "=========================================="
+        echo "Waiting for Cloudflare link generation..."
+        echo "=========================================="
+        
+        # Link generate hone ka wait karein
+        sleep 8
+        
+        # Log se trycloudflare link find karke highlight karke print karein
+        TUNNEL_URL=$(grep -o 'https://[-a-zA-Z0-9 presentation]*\.trycloudflare\.com' cloudflared.log | head -n 1)
+        
+        echo ""
+        echo "=========================================================="
+        echo "🚀 ACCESS YOUR DJANGO APP HERE:"
+        echo "👉 $TUNNEL_URL"
+        echo "=========================================================="
+        echo ""
+        
+        # Server ko 3 ghante (10800 seconds) tak active rakhne ke liye sleep
+        sleep 10800
