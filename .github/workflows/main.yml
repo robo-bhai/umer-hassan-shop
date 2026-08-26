@@ -45,17 +45,17 @@ jobs:
         python manage.py migrate
 
         # 3. Existing superuser delete karke new superuser create karein
-        python manage.py shell -c "
-from django.contrib.auth import get_user_model;
-User = get_user_model();
-User.objects.filter(username='admin').delete();
-User.objects.create_superuser('admin', 'admin@example.com', 'AdminPassword123');
-print('==========================================');
-print('Fresh Superuser created successfully!');
-print('Username: admin');
-print('Password: AdminPassword123');
-print('==========================================');
-"
+        python manage.py shell << 'EOF'
+from django.contrib.auth import get_user_model
+User = get_user_model()
+User.objects.filter(username='admin').delete()
+User.objects.create_superuser('admin', 'admin@example.com', 'AdminPassword123')
+print('==========================================')
+print('Fresh Superuser created successfully!')
+print('Username: admin')
+print('Password: AdminPassword123')
+print('==========================================')
+EOF
 
     - name: Start Django & Cloudflare Tunnel (3 Hours)
       env:
