@@ -43,13 +43,20 @@ jobs:
         DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
-        # 1. Agar koi conflicting migrations hain toh unhe automatically merge karein
+        # 1. Pehle normal migration run karne ki koshish karein
         python manage.py makemigrations --merge --no-input || true
+        
+        if python manage.py migrate; then
+            echo "✅ Database migrated successfully without errors!"
+        else
+            echo "⚠️ Migration failed! Resetting database and retrying..."
+            # Agar error aaye tab database flush/reset karein
+            python manage.py flush --no-input || true
+            python manage.py migrate --run-syncdb
+            python manage.py migrate
+        fi
 
-        # 2. Missing tables ya conflicting state ko handle karne ke liye pehle fake migrate karein ya phir regular migrate
-        python manage.py migrate --fake-initial || python manage.py migrate --run-syncdb
-
-        # 3. Fresh superuser create karein using Environment Secrets
+        # 2. Fresh superuser create karein using Environment Secrets
         python manage.py shell -c "
         import os
         from django.contrib.auth import get_user_model
@@ -62,7 +69,7 @@ jobs:
         "
 
         echo "=========================================="
-        echo "Database migrated & Fresh Superuser created successfully from Secrets!"
+        echo "Database setup & Fresh Superuser ready!"
         echo "=========================================="
 
     - name: Launch Permanent Cloudflare Tunnel
