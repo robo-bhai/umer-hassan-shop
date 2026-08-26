@@ -43,28 +43,57 @@ jobs:
         DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
-        # 1. Pehle conflicting migrations ko merge karein
+        # 1. Merge conflicting migrations
         echo "Merging conflicting migrations..."
         python manage.py makemigrations --merge --no-input || true
         
-        # 2. Check migration status
-        echo "Checking migration status..."
-        python manage.py showmigrations --plan || true
+        # 2. CRITICAL: Force create axes tables first
+        echo "Creating Axes tables..."
+        python manage.py migrate axes --no-input || true
         
-        # 3. Fake apply all existing migrations to mark them as done
+        # 3. Fake apply all existing migrations
         echo "Fake applying all existing migrations..."
         python manage.py migrate --fake --no-input || true
         
-        # 4. Create new migrations for any changes
+        # 4. Create new migrations if needed
         echo "Creating new migrations if needed..."
         python manage.py makemigrations --no-input || true
         
-        # 5. Apply only NEW migrations, skip existing ones
+        # 5. Apply new migrations
         echo "Applying new migrations only..."
         python manage.py migrate --no-input || true
         
-        # 6. Handle axes migrations separately
-        python manage.py migrate axes --no-input || true
+        # 6. Verify axes tables exist
+        python -c "
+        import os, pymysql
+        pymysql.install_as_MySQLdb()
+        import django
+        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
+        django.setup()
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute('SHOW TABLES LIKE \"axes_accessattempt\"')
+            if cursor.fetchone():
+                print('✓ axes_accessattempt table exists')
+            else:
+                print('✗ axes_accessattempt table missing - creating now')
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS axes_accessattempt (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        ip_address VARCHAR(45) NULL,
+                        username VARCHAR(255) NULL,
+                        user_agent VARCHAR(255) NULL,
+                        path_info VARCHAR(255) NULL,
+                        failures_since_start INT DEFAULT 0,
+                        attempt_time DATETIME NOT NULL,
+                        get_data TEXT NULL,
+                        post_data TEXT NULL,
+                        http_accept VARCHAR(1024) NULL,
+                        locked_out BOOL NOT NULL DEFAULT FALSE
+                    )
+                ''')
+                print('✓ axes_accessattempt table created manually')
+        "
 
         # 7. Schema Compatibility Check
         python -c "
