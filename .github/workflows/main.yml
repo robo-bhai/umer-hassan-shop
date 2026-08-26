@@ -71,7 +71,23 @@ jobs:
         python manage.py makemigrations --merge --no-input || true
         python manage.py migrate || python manage.py migrate --fake-initial || python manage.py migrate --fake
 
-        # 3. Fresh superuser create karein using Environment Secrets
+        # 3. FIX: auth_user table ke 'last_login' column ko explicitly NULL allow karwayein taake IntegrityError na aaye
+        python -c "
+        import os, pymysql
+        pymysql.install_as_MySQLdb()
+        import django
+        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
+        django.setup()
+        from django.db import connection
+        with connection.cursor() as cursor:
+            try:
+                cursor.execute('ALTER TABLE auth_user MODIFY COLUMN last_login DATETIME(6) NULL DEFAULT NULL;')
+                print('Successfully altered auth_user.last_login to allow NULL.')
+            except Exception as e:
+                print('Note on alter table:', e)
+        "
+
+        # 4. Fresh superuser create karein using Environment Secrets
         python -c "
         import os
         import pymysql
