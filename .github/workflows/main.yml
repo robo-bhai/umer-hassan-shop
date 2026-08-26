@@ -37,6 +37,11 @@ jobs:
         DB_PASSWORD: ${{ secrets.DB_PASS }}
         DB_NAME: ${{ secrets.DB_NAME }}
         DB_PORT: ${{ secrets.DB_PORT }}
+        DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+        DJANGO_SALT_KEY: ${{ secrets.DJANGO_SALT_KEY }}
+        DJANGO_SUPERUSER_NAME: ${{ secrets.DJANGO_SUPERUSER_NAME }}
+        DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
+        DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
         # 1. Database ka tamam existing data flush karein
         python manage.py flush --no-input
@@ -44,13 +49,20 @@ jobs:
         # 2. Fresh migrations apply karein
         python manage.py migrate
 
-        # 3. Fresh superuser create karein (clean one-liner formulation)
-        python manage.py shell -c "from django.contrib.auth import get_user_model; User = get_user_model(); User.objects.filter(username='admin').delete(); User.objects.create_superuser('admin', 'admin@example.com', 'AdminPassword123')"
+        # 3. Fresh superuser create karein using Environment Secrets
+        python manage.py shell -c "
+        import os
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        username = os.environ.get('DJANGO_SUPERUSER_NAME', 'admin')
+        email = os.environ.get('DJANGO_SUPERUSER_EMAIL', 'admin@example.com')
+        password = os.environ.get('DJANGO_SUPERUSER_PASSWORD')
+        User.objects.filter(username=username).delete()
+        User.objects.create_superuser(username, email, password)
+        "
 
         echo "=========================================="
-        echo "Fresh Superuser created successfully!"
-        echo "Username: admin"
-        echo "Password: AdminPassword123"
+        echo "Fresh Superuser created successfully from Secrets!"
         echo "=========================================="
 
     - name: Launch Permanent Cloudflare Tunnel
@@ -61,6 +73,9 @@ jobs:
         DB_PASSWORD: ${{ secrets.DB_PASS }}
         DB_NAME: ${{ secrets.DB_NAME }}
         DB_PORT: ${{ secrets.DB_PORT }}
+        DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+        DJANGO_SALT_KEY: ${{ secrets.DJANGO_SALT_KEY }}
+        DJANGO_SUPERUSER_NAME: ${{ secrets.DJANGO_SUPERUSER_NAME }}
         TUNNEL_CREDS: ${{ secrets.CLOUDFLARE_CREDENTIALS }}
         TUNNEL_UUID: "1a0537c0-5705-4b1d-9887-bd4e31e4450b"
       run: |
@@ -96,9 +111,7 @@ jobs:
         echo "🚀 ACCESS YOUR DJANGO APP HERE:"
         echo "👉 $STATIC_URL"
         echo "=========================================================="
-        echo "🔑 DEFAULT LOGIN CREDENTIALS:"
-        echo "👤 Username: admin"
-        echo "🔑 Password: AdminPassword123"
+        echo "🔑 Admin Username and Password are securely loaded from GitHub Secrets."
         echo "=========================================================="
 
         # Permanent Tunnel ko FOREGROUND mein run karein taake action active rahe
