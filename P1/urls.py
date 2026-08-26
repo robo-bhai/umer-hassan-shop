@@ -2,31 +2,29 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
-from django.views.generic import TemplateView
-from app import views
+from django.shortcuts import redirect
+from django.contrib.auth.views import LogoutView
 
 urlpatterns = [
+    # Admin Panel
     path('admin/', admin.site.urls),
-    path('admin/find-product-by-barcode/', views.find_product_by_barcode, name='find_product_by_barcode'),
+    
+    # Frontend (All app URLs)
     path('', include('app.urls')),
     
-    # Service worker at root level
-    path('service-worker.js', TemplateView.as_view(
-        template_name='app/service-worker.js',
-        content_type='application/javascript'
-    ), name='service_worker_root'),
+    path('ceo/', include('ceo_module.urls')),
+    
+    
+    
+    # Redirect /accounts/login/ to /login/
+    path('accounts/login/', lambda request: redirect('/login/')),
+    
+    # GET logout redirect (Django 5.x fix)
+    path('accounts/logout/', lambda request: redirect('/logout-redirect/')),
+    path('logout-redirect/', lambda request: redirect('/login/'), name='logout_redirect'),
 ]
 
+# Serve static and media files in development
 if settings.DEBUG:
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-
-
-#from django.contrib import admin
-#from django.urls import path, include
-
-#urlpatterns = [
-    path('admin/', admin.site.urls),
-    path('admin/find-product-by-barcode/', views.find_product_by_barcode, name='find_product_by_barcode'),
-    path('app/', include('app.urls')),  # Ensure this line exists
-#]

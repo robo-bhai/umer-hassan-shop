@@ -516,3 +516,149 @@ def process_sale_return(request, sale_id):
         return JsonResponse({"status": "success", "refund": str(sale_return.total_amt)})
     except ImportError:
         return JsonResponse({"status": "error", "message": "Return models not found."}, status=500)
+        
+        
+# ============================================
+# DATABASE BACKUP & RCLONE CLOUD MANAGEMENT
+# ============================================
+import json
+import os
+import subprocess
+import shutil
+import time
+
+# Configurations (Termux paths and Rclone settings)
+BACKUP_DIR = "/storage/emulated/0/Download/Backups"
+REMOTE_NAME = "gdrive"
+REMOTE_DIR = "TermuxBackups"
+
+
+def run_rclone_cmd(cmd):
+    """Utility to execute shell commands securely."""
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    return result.returncode == 0, result.stderr
+
+
+def get_remote_backups():
+    """Fetches live remote files from Google Drive using lsjson, sorted newest first."""
+    cmd = ["rclone", "lsjson", f"{REMOTE_NAME}:{REMOTE_DIR}"]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if result.returncode == 0 and result.stdout:
+        try:
+            files_data = json.loads(result.stdout)
+            # Filter directories, keep only real files
+            files_only = [f for f in files_data if not f.get("IsDir")]
+            # Sort chronologically (Newest first)
+            files_only.sort(key=lambda x: x.get("ModTime", ""), reverse=True)
+            return files_only
+        except Exception:
+            return []
+    return []
+
+
+@login_required
+def database_backup_view(request):
+    """
+    Handles local backup generation, rclone cloud uploads, 
+    rolling 3-file retention, and interactive database restoration.
+    """
+    restore_file = request.GET.get("restore")
+    delete_file = request.GET.get("delete")
+
+    # ---- 1. CLOUD RESTORE LOGIC ----
+    if restore_file:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        local_path = os.path.join(BACKUP_DIR, restore_file)
+
+        # Download the file from Google Drive to local Backups folder
+        success, err = run_rclone_cmd([
+            "rclone", "copyto", 
+            f"{REMOTE_NAME}:{REMOTE_DIR}/{restore_file}", 
+            local_path
+        ])
+
+        if success:
+            # Check if it's an SQLite backup and replace current database file
+            if restore_file.endswith(".sqlite3") and os.path.exists(local_path):
+                try:
+                    # Closing any active connections before database replacement is ideal
+                    shutil.copy(local_path, "db.sqlite3")
+                    messages.success(request, f"🎉 '{restore_file}' successfully downloaded and database restored!")
+                except Exception as db_err:
+                    messages.error(request, f"❌ Local replacement failed: {db_err}")
+            else:
+                messages.success(request, f"📥 File '{restore_file}' downloaded safely to {BACKUP_DIR}. (Process JSON restore manually if needed).")
+        else:
+            messages.error(request, f"❌ Cloud restore download failed: {err}")
+        return redirect("database_backup")
+
+    # ---- 2. CLOUD DELETE LOGIC ----
+    if delete_file:
+        success, err = run_rclone_cmd([
+            "rclone", "deletefile", 
+            f"{REMOTE_NAME}:{REMOTE_DIR}/{delete_file}"
+        ])
+        if success:
+            messages.success(request, f"🗑️ '{delete_file}' deleted permanently from Google Drive.")
+        else:
+            messages.error(request, f"❌ Cloud delete failed: {err}")
+        return redirect("database_backup")
+
+    # ---- 3. CREATE BACKUP AND SYNC LOGIC (POST) ----
+    if request.method == "POST":
+        action = request.POST.get("action")
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        
+        timestamp = int(time.time())
+        filename = ""
+
+        if action == "json_backup":
+            filename = f"backup_full_{timestamp}.json"
+            local_path = os.path.join(BACKUP_DIR, filename)
+            # Execute Django standard dumpdata
+            subprocess.run(f"python manage.py dumpdata > {local_path}", shell=True)
+
+        elif action == "sqlite_backup":
+            filename = f"backup_{timestamp}.sqlite3"
+            local_path = os.path.join(BACKUP_DIR, filename)
+            # Direct binary copy of db.sqlite3
+            if os.path.exists("db.sqlite3"):
+                shutil.copy("db.sqlite3", local_path)
+            else:
+                messages.error(request, "❌ Central db.sqlite3 file not found.")
+                return redirect("database_backup")
+
+        # Sync/Copy the updated local backups folder to Google Drive
+        success, err = run_rclone_cmd(["rclone", "copy", BACKUP_DIR, f"{REMOTE_NAME}:{REMOTE_DIR}"])
+
+        if success:
+            # Active 3-files maximum retention enforcement rules
+            remote_files = get_remote_backups()
+            if len(remote_files) > 3:
+                # Target files older than the top 3 index
+                for old_file in remote_files[3:]:
+                    old_name = old_file["Name"]
+                    run_rclone_cmd(["rclone", "deletefile", f"{REMOTE_NAME}:{REMOTE_DIR}/{old_name}"])
+
+            messages.success(request, f"🚀 Backup '{filename}' created and safely synced to Google Drive!")
+        else:
+            messages.error(request, f"❌ Cloud backup sync failed: {err}")
+
+        return redirect("database_backup")
+
+    # ---- 4. RENDER DATA PROCESSING ----
+    cloud_files = get_remote_backups()
+    
+    backup_files = [f["Name"] for f in cloud_files]
+    file_sizes = {f["Name"]: f"{round(f['Size'] / 1024, 2)} KB" for f in cloud_files}
+    file_dates = {f["Name"]: f["ModTime"][:19].replace("T", " ") for f in cloud_files}
+
+    context = {
+        "backup_dir": f"{REMOTE_NAME}:{REMOTE_DIR} (Cloud Link)",
+        "backup_files": backup_files,
+        "file_sizes": file_sizes,
+        "file_dates": file_dates,
+    }
+    return render(request, "database_backup.html", context)
+        
+        

@@ -1,13 +1,5 @@
 {% extends "admin/change_list.html" %}
 
-{% block object-tools-items %}
-  {{ block.super }}
-  {# Fallback button definition for django-import-export or custom admin buttons #}
-  {% if not button_rendered %}
-    <!-- admin/button.html fallback -->
-  {% endif %}
-{% endblock %}
-
 {% block content %}
 <!-- "Back to Admin" Button -->
 <div style="margin-bottom: 20px;">
@@ -21,7 +13,7 @@
   </div>
 {% endif %}
 
-{{ block.super }}  {# Original Change List / Purchase Table #}
+{{ block.super }}  {# اصل Purchase Table بھی نظر آئے #}
 
 <!-- CSS Styling -->
 <style>
@@ -48,4 +40,6 @@
         background: linear-gradient(90deg, black, gray);
     }
 </style>
+
 {% endblock %}
+

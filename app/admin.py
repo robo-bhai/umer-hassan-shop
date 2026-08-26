@@ -1,4 +1,7 @@
 from django.contrib import admin
+from django.utils.timezone import now
+import shutil
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from import_export.admin import ImportExportModelAdmin
@@ -30,155 +33,1166 @@ from django.contrib.auth.models import User, Group
 from django.contrib.auth.admin import UserAdmin, GroupAdmin
 import os
 from django.urls import path
-from django.shortcuts import redirect, get_object_or_404
+from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 import subprocess
 from django.template.response import TemplateResponse
 from django.http import HttpResponseForbidden
 from django.utils.html import format_html
 import io
+#from .models import (
+    #PurchaseRetrn,
+    #PurchaseRetrnItem, 
+   # SaleRetrn,
+ #   SaleRetrnItem,  )
+
+
+
+# Import at top
+from .models import SystemSetting
+
+# ============================================
+# SHAREHOLDER ADMIN - FIXED
+# ============================================
+
+class ShareInline(admin.TabularInline):
+    model = Share
+    fields = ('share_type', 'quantity', 'purchase_price', 'certificate_number', 'issue_date')
+    extra = 0
+    readonly_fields = ('issue_date',)
+
+
+class DividendPaymentInline(admin.TabularInline):
+    model = DividendPayment
+    fields = ('dividend', 'shares_held', 'amount', 'status', 'payment_date')
+    readonly_fields = ('dividend', 'shares_held', 'amount')
+    extra = 0
+
+
+class MeetingAttendanceInline(admin.TabularInline):
+    """Inline for managing meeting attendance"""
+    model = MeetingAttendance
+    fields = ('shareholder', 'status', 'check_in_time', 'check_out_time', 'notes')
+    extra = 1
+    autocomplete_fields = ['shareholder']
+    
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == "shareholder":
+            kwargs["queryset"] = Shareholder.objects.filter(status='active')
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+
+@admin.register(Shareholder, site=admin.site)
+class ShareholderAdmin(admin.ModelAdmin):
+    list_display = ('shareholder_code', 'name', 'shareholder_type', 'phone', 'email', 'total_shares_display', 'total_investment_display', 'status_badge')
+    list_filter = ('shareholder_type', 'status', 'is_founder', 'is_board_member')
+    search_fields = ('shareholder_code', 'name', 'email', 'phone', 'cnic')
+    inlines = [ShareInline, DividendPaymentInline]
+    readonly_fields = ('shareholder_code', 'created_at', 'updated_at')
+    
+    fieldsets = (
+        ('Personal Information', {
+            'fields': ('shareholder_code', 'name', 'shareholder_type', 'status')
+        }),
+        ('Contact Details', {
+            'fields': ('email', 'phone', 'address')
+        }),
+        ('Identification', {
+            'fields': ('cnic', 'passport_no')
+        }),
+        ('Company Details', {
+            'fields': ('company_name', 'registration_no'),
+            'classes': ('collapse',)
+        }),
+        ('Banking Details', {
+            'fields': ('bank_name', 'account_number', 'account_title', 'iban'),
+            'classes': ('collapse',)
+        }),
+        ('Additional Info', {
+            'fields': ('is_founder', 'is_board_member', 'notes')
+        }),
+        ('System Fields', {
+            'fields': ('created_by', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def total_shares_display(self, obj):
+        return f"{obj.total_shares():,}"
+    total_shares_display.short_description = "Total Shares"
+    
+    def total_investment_display(self, obj):
+        return f"Rs. {obj.total_investment():,.2f}"
+    total_investment_display.short_description = "Total Investment"
+    
+    def status_badge(self, obj):
+        return obj.status_badge
+    status_badge.short_description = "Status"
+    status_badge.allow_tags = True
+    
+    def save_model(self, request, obj, form, change):
+        if not obj.created_by:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+    
+    actions = ['generate_dividend_report', 'export_shareholders_excel']
+    
+    def generate_dividend_report(self, request, queryset):
+        """Generate dividend report for selected shareholders"""
+        from io import BytesIO
+        from reportlab.lib.pagesizes import A4
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet
+        
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        styles = getSampleStyleSheet()
+        story = []
+        
+        story.append(Paragraph("Shareholder Dividend Report", styles['Heading1']))
+        story.append(Paragraph(f"Generated: {now().strftime('%d-%m-%Y %H:%M')}", styles['Normal']))
+        story.append(Spacer(1, 0.2*inch))
+        
+        data = [['Code', 'Name', 'Total Shares', 'Total Investment', 'Total Dividends']]
+        for shareholder in queryset:
+            data.append([
+                shareholder.shareholder_code,
+                shareholder.name,
+                f"{shareholder.total_shares():,}",
+                f"Rs. {shareholder.total_investment():,.2f}",
+                f"Rs. {shareholder.total_dividends():,.2f}"
+            ])
+        
+        table = Table(data, repeatRows=1)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ]))
+        
+        story.append(table)
+        doc.build(story)
+        buffer.seek(0)
+        
+        response = HttpResponse(buffer, content_type='application/pdf')
+        response['Content-Disposition'] = 'attachment; filename="shareholder_dividend_report.pdf"'
+        return response
+    generate_dividend_report.short_description = "📄 Generate Dividend Report (PDF)"
+    
+    def export_shareholders_excel(self, request, queryset):
+        """Export shareholders to Excel"""
+        import openpyxl
+        from openpyxl.styles import Font, Alignment
+        
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Shareholders"
+        
+        headers = ['Code', 'Name', 'Type', 'Email', 'Phone', 'Status', 'Total Shares', 'Total Investment']
+        ws.append(headers)
+        
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center")
+        
+        for shareholder in queryset:
+            ws.append([
+                shareholder.shareholder_code,
+                shareholder.name,
+                shareholder.get_shareholder_type_display(),
+                shareholder.email or '',
+                shareholder.phone or '',
+                shareholder.status,
+                shareholder.total_shares(),
+                float(shareholder.total_investment())
+            ])
+        
+        for col in ws.columns:
+            max_length = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            ws.column_dimensions[col_letter].width = min(max_length + 2, 30)
+        
+        response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        response['Content-Disposition'] = 'attachment; filename="shareholders_export.xlsx"'
+        wb.save(response)
+        return response
+    export_shareholders_excel.short_description = "📊 Export to Excel"
+
+
+@admin.register(Share, site=admin.site)
+class ShareAdmin(admin.ModelAdmin):
+    list_display = ('id', 'shareholder', 'share_type', 'quantity', 'purchase_price', 'total_value_display', 'issue_date')
+    list_filter = ('share_type', 'is_locked', 'issue_date')
+    search_fields = ('shareholder__name', 'shareholder__shareholder_code', 'certificate_number')
+    readonly_fields = ('created_at', 'updated_at')
+    
+    fieldsets = (
+        ('Share Information', {
+            'fields': ('shareholder', 'share_type', 'quantity', 'purchase_price', 'certificate_number')
+        }),
+        ('Issue Details', {
+            'fields': ('issue_date', 'is_locked')
+        }),
+        ('Transfer Tracking', {
+            'fields': ('transferred_from', 'transfer_date', 'transfer_notes'),
+            'classes': ('collapse',)
+        }),
+        ('Notes', {
+            'fields': ('notes',)
+        }),
+        ('System Fields', {
+            'fields': ('created_by', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def total_value_display(self, obj):
+        return f"Rs. {obj.total_value():,.2f}"
+    total_value_display.short_description = "Total Value"
+    
+    def save_model(self, request, obj, form, change):
+        if not obj.created_by:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+
+@admin.register(SharePrice, site=admin.site)
+class SharePriceAdmin(admin.ModelAdmin):
+    list_display = ('price', 'date', 'is_active', 'created_at')
+    list_filter = ('is_active', 'date')
+    search_fields = ('notes',)
+    list_editable = ('is_active',)
+    
+    def save_model(self, request, obj, form, change):
+        if not obj.created_by:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+
+class DividendPaymentInline(admin.TabularInline):
+    model = DividendPayment
+    fields = ('shareholder', 'shares_held', 'amount', 'status', 'payment_date')
+    readonly_fields = ('shareholder', 'shares_held', 'amount')
+    extra = 0
+    can_delete = False
+
+
+@admin.register(Dividend, site=admin.site)
+class DividendAdmin(admin.ModelAdmin):
+    list_display = ('dividend_no', 'amount_per_share', 'total_amount', 'declaration_date', 'record_date', 'payment_date', 'status')
+    list_filter = ('status', 'is_interim', 'declaration_date')
+    search_fields = ('dividend_no', 'notes')
+    inlines = [DividendPaymentInline]
+    readonly_fields = ('dividend_no', 'total_amount', 'created_at')
+    actions = ['generate_dividend_payments', 'mark_paid_bulk']
+    
+    fieldsets = (
+        ('Dividend Information', {
+            'fields': ('dividend_no', 'amount_per_share', 'total_amount', 'is_interim')
+        }),
+        ('Dates', {
+            'fields': ('declaration_date', 'record_date', 'payment_date')
+        }),
+        ('Status', {
+            'fields': ('status',)
+        }),
+        ('Additional', {
+            'fields': ('notes',)
+        }),
+        ('System Fields', {
+            'fields': ('created_by', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def save_model(self, request, obj, form, change):
+        if not obj.created_by:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+    
+    def generate_dividend_payments(self, request, queryset):
+        """Generate dividend payments for all shareholders"""
+        count = 0
+        for dividend in queryset.filter(status='declared'):
+            shareholders = Shareholder.objects.filter(status='active')
+            for shareholder in shareholders:
+                shares = shareholder.total_shares()
+                if shares > 0:
+                    amount = shares * dividend.amount_per_share
+                    DividendPayment.objects.get_or_create(
+                        dividend=dividend,
+                        shareholder=shareholder,
+                        defaults={
+                            'shares_held': shares,
+                            'amount': amount,
+                            'status': 'pending'
+                        }
+                    )
+                    count += 1
+            dividend.status = 'approved'
+            dividend.save()
+        
+        self.message_user(request, f"✅ {count} dividend payments generated for {queryset.count()} dividends!")
+    generate_dividend_payments.short_description = "💰 Generate Dividend Payments"
+    
+    def mark_paid_bulk(self, request, queryset):
+        """Mark selected dividend payments as paid"""
+        count = 0
+        for dividend in queryset:
+            payments = dividend.payments.filter(status='pending')
+            for payment in payments:
+                payment.mark_paid(payment_method='Bank Transfer', processed_by=request.user)
+                count += 1
+        self.message_user(request, f"✅ {count} payments marked as paid!")
+    mark_paid_bulk.short_description = "✅ Mark Payments as Paid"
+
+
+@admin.register(ShareTransfer, site=admin.site)
+class ShareTransferAdmin(admin.ModelAdmin):
+    list_display = ('transfer_no', 'from_shareholder', 'to_shareholder', 'quantity', 'transfer_price', 'total_value_display', 'status_badge', 'transfer_date')
+    list_filter = ('status', 'transfer_date')
+    search_fields = ('transfer_no', 'from_shareholder__name', 'to_shareholder__name')
+    readonly_fields = ('transfer_no', 'created_at', 'updated_at')
+    
+    fieldsets = (
+        ('Transfer Information', {
+            'fields': ('transfer_no', 'from_shareholder', 'to_shareholder')
+        }),
+        ('Share Details', {
+            'fields': ('quantity', 'transfer_price')
+        }),
+        ('Shares Selection', {
+            'fields': ('shares',),
+            'description': 'Select the shares to transfer'
+        }),
+        ('Dates', {
+            'fields': ('transfer_date',)
+        }),
+        ('Status', {
+            'fields': ('status', 'approved_by', 'approved_at', 'completed_at')
+        }),
+        ('Notes', {
+            'fields': ('reason', 'notes')
+        }),
+        ('System Fields', {
+            'fields': ('created_by', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    # ✅ Use filter_horizontal with ManyToManyField
+    filter_horizontal = ('shares',)
+    
+    def total_value_display(self, obj):
+        return f"Rs. {obj.total_value():,.2f}"
+    total_value_display.short_description = "Total Value"
+    
+    def status_badge(self, obj):
+        return obj.status_badge
+    status_badge.short_description = "Status"
+    status_badge.allow_tags = True
+    
+    def save_model(self, request, obj, form, change):
+        if not obj.created_by:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+    
+    actions = ['approve_transfers', 'complete_transfers', 'reject_transfers']
+    
+    def approve_transfers(self, request, queryset):
+        count = 0
+        for transfer in queryset.filter(status='pending'):
+            transfer.approve(request.user)
+            count += 1
+        self.message_user(request, f"✅ {count} transfers approved!")
+    approve_transfers.short_description = "✅ Approve Selected Transfers"
+    
+    def complete_transfers(self, request, queryset):
+        count = 0
+        for transfer in queryset.filter(status='approved'):
+            transfer.complete(request.user)
+            count += 1
+        self.message_user(request, f"✅ {count} transfers completed!")
+    complete_transfers.short_description = "✅ Complete Selected Transfers"
+    
+    def reject_transfers(self, request, queryset):
+        count = 0
+        for transfer in queryset.filter(status='pending'):
+            transfer.reject(request.user)
+            count += 1
+        self.message_user(request, f"❌ {count} transfers rejected!")
+    reject_transfers.short_description = "❌ Reject Selected Transfers"
+
+
+@admin.register(ShareholderMeeting, site=admin.site)
+class ShareholderMeetingAdmin(admin.ModelAdmin):
+    """Shareholder Meeting Admin - Fixed for custom through model"""
+    list_display = ('meeting_no', 'title', 'meeting_type', 'date', 'status', 'total_attendees')
+    list_filter = ('meeting_type', 'status', 'date')
+    search_fields = ('meeting_no', 'title', 'agenda')
+    readonly_fields = ('meeting_no', 'created_at', 'updated_at', 'total_attendees')
+    
+    fieldsets = (
+        ('Meeting Information', {
+            'fields': ('meeting_no', 'title', 'meeting_type', 'date', 'time', 'venue', 'status')
+        }),
+        ('Agenda & Minutes', {
+            'fields': ('agenda', 'minutes')
+        }),
+        # ✅ attendees removed from fieldsets - using inline instead
+        ('Resolutions', {
+            'fields': ('resolutions', 'resolutions_passed'),
+            'classes': ('collapse',)
+        }),
+        ('Additional', {
+            'fields': ('notes',)
+        }),
+        ('System Fields', {
+            'fields': ('created_by', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    # ✅ Use inline for attendance management
+    inlines = [MeetingAttendanceInline]
+    
+    def save_model(self, request, obj, form, change):
+        if not obj.created_by:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+
+@admin.register(MeetingAttendance, site=admin.site)
+class MeetingAttendanceAdmin(admin.ModelAdmin):
+    list_display = ('meeting', 'shareholder', 'status', 'check_in_time', 'check_out_time')
+    list_filter = ('status', 'meeting')
+    search_fields = ('shareholder__name', 'shareholder__shareholder_code')
+    readonly_fields = ('created_at',)
+    
+    def has_add_permission(self, request):
+        return False  # Attendance created via meeting
+
+@admin.register(CashTransaction)
+class CashTransactionAdmin(admin.ModelAdmin):
+    list_display = ('date', 'transaction_type', 'amount', 'description', 'created_by')
+    list_filter = ('transaction_type', 'date')
+    search_fields = ('description', 'reference_no')
+    readonly_fields = ('created_at',)
+
+# Register at bottom with other admin registrations
+@admin.register(SystemSetting)
+class SystemSettingAdmin(admin.ModelAdmin):
+    list_display = ('setting_key', 'setting_value', 'description', 'updated_at')
+    list_editable = ('setting_value',)
+    list_filter = ('setting_key',)
+    search_fields = ('setting_key', 'description')
+    
+    fieldsets = (
+        ('Module Visibility Settings', {
+            'fields': ('setting_key', 'setting_value', 'description'),
+            'description': '📌 Set "true" to show module, "false" to hide module'
+        }),
+    )
+    
+    def has_add_permission(self, request):
+        # Only superuser can add new settings
+        return request.user.is_superuser
+    
+    def has_delete_permission(self, request, obj=None):
+        # Only superuser can delete
+        return request.user.is_superuser
+
+# Create default settings after migration
+def create_default_system_settings():
+    defaults = [
+        ('show_hr_module', 'true', 'Show/Hide HR Module (Employees, Attendance, Payroll, Leaves, Salary Slips)'),
+        ('show_production_module', 'true', 'Show/Hide Production Module (Production Orders, BOM, Operations)'),
+        ('show_installment_module', 'true', 'Show/Hide Installment Module (Installment Plans, EMI Payments)'),
+        ('show_reports_module', 'true', 'Show/Hide Reports Module (All Reports)'),
+        ('show_whatsapp_module', 'true', 'Show/Hide WhatsApp Module (Messages, Reminders)'),
+        ('show_inventory_module', 'true', 'Show/Hide Inventory Module (Stock, Batches, Transfers)'),
+        ('show_purchase_module', 'true', 'Show/Hide Purchase Module (Purchases, Purchase Orders, GRN)'),
+        ('show_sales_module', 'true', 'Show/Hide Sales Module (Sales, Sale Orders, Challans)'),
+        ('show_accounts_module', 'true', 'Show/Hide Accounts Module (Expenses, Savings, Debts)'),
+        ('show_backup_module', 'true', 'Show/Hide Database Backup Module'),
+    ]
+    
+    for key, value, desc in defaults:
+        SystemSetting.objects.get_or_create(
+            setting_key=key,
+            defaults={'setting_value': value, 'description': desc}
+        )
+
+# Call this after migration (will run on server start)
+try:
+    if SystemSetting.objects.count() == 0:
+        create_default_system_settings()
+except:
+    pass
 
 BACKUP_DIR = "C:/Users/Store/P1/dbbackup/"
 
-# ============================================
-# REPORTLAB PDF GENERATION HELPER FUNCTIONS
-# ============================================
-
 def generate_invoice_pdf(sale_obj):
     """
-    Sale ke liye proper Invoice PDF generate karein using ReportLab.
+    Premium Professional Invoice PDF with Amount in Words
     """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.units import inch, mm
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    import io
+    from datetime import datetime
+    import os
+    
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=0.3*inch, bottomMargin=0.5*inch)
+    
+    # Page Setup
+    doc = SimpleDocTemplate(
+        buffer, 
+        pagesize=A4,
+        topMargin=0.4*inch,
+        bottomMargin=0.4*inch,
+        leftMargin=0.5*inch,
+        rightMargin=0.5*inch
+    )
+    
     styles = getSampleStyleSheet()
     story = []
     
     # Company Info
     company = CompanyInfo.objects.first()
-    company_name = company.name if company else "YOUR COMPANY NAME"
-    company_address = company.address if company else "Address Here"
-    company_phone = company.contact_number if company else "Phone"
+    company_name = company.name if company else "MY SUPER STORE"
+    company_address = company.address if company else "Khanewal"
+    company_phone = company.contact_number if company else "0300 0000000"
+    company_email = company.email if company else "info@mysuperstore.com"
+    company_tagline = company.tagline if company and company.tagline else "Quality Products, Best Service"
     
-    # Custom Styles
+    # ============================================
+    # CUSTOM STYLES
+    # ============================================
+    
     title_style = ParagraphStyle(
         'InvoiceTitle',
         parent=styles['Heading1'],
-        fontSize=20,
+        fontSize=22,
         alignment=TA_CENTER,
-        spaceAfter=5
+        textColor=colors.HexColor('#1a1a2e'),
+        spaceAfter=3,
+        fontName='Helvetica-Bold'
     )
     
-    # Invoice Header
+    subtitle_style = ParagraphStyle(
+        'Subtitle',
+        parent=styles['Normal'],
+        fontSize=9,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor('#6c757d'),
+        spaceAfter=3
+    )
+    
+    label_style = ParagraphStyle(
+        'Label',
+        parent=styles['Normal'],
+        fontSize=9,
+        textColor=colors.HexColor('#6c757d'),
+        fontName='Helvetica'
+    )
+    
+    value_style = ParagraphStyle(
+        'Value',
+        parent=styles['Normal'],
+        fontSize=10,
+        textColor=colors.HexColor('#1a1a2e'),
+        fontName='Helvetica-Bold'
+    )
+    
+    # ============================================
+    # HEADER SECTION
+    # ============================================
+    
     story.append(Paragraph(company_name, title_style))
-    story.append(Paragraph(company_address, styles['Normal']))
-    story.append(Paragraph(f"Phone: {company_phone}", styles['Normal']))
-    story.append(Spacer(1, 0.2*inch))
+    story.append(Paragraph(company_tagline, subtitle_style))
+    story.append(Paragraph(f"{company_address} | Phone: {company_phone}", subtitle_style))
+    story.append(Spacer(1, 0.1*inch))
     
-    # Invoice Title
-    invoice_title = ParagraphStyle(
-        'InvTitle',
-        parent=styles['Heading2'],
-        fontSize=16,
+    # Decorative Line
+    line_table = Table([['']], colWidths=[6.5*inch])
+    line_table.setStyle(TableStyle([
+        ('LINEBELOW', (0, 0), (-1, 0), 2, colors.HexColor('#667eea')),
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+    ]))
+    story.append(line_table)
+    story.append(Spacer(1, 0.1*inch))
+    
+    # ============================================
+    # INVOICE TITLE
+    # ============================================
+    
+    invoice_title_style = ParagraphStyle(
+        'InvoiceTitle2',
+        parent=styles['Heading1'],
+        fontSize=18,
         alignment=TA_CENTER,
-        spaceAfter=10
+        textColor=colors.HexColor('#667eea'),
+        spaceAfter=10,
+        fontName='Helvetica-Bold'
     )
-    story.append(Paragraph("TAX INVOICE", invoice_title))
+    story.append(Paragraph("INVOICE", invoice_title_style))
+    story.append(Spacer(1, 0.1*inch))
     
-    # Two-column layout for invoice details
+    # ============================================
+    # INVOICE DETAILS (Two Column)
+    # ============================================
+    
+    # Left Column
     left_data = [
-        [Paragraph(f"<b>Invoice No:</b> {sale_obj.bill_no}", styles['Normal'])],
-        [Paragraph(f"<b>Date:</b> {sale_obj.sale_date.strftime('%d-%m-%Y')}", styles['Normal'])],
+        [Paragraph("<b>Invoice No:</b>", label_style), Paragraph(f"<b>{sale_obj.bill_no}</b>", value_style)],
+        [Paragraph("<b>Invoice Date:</b>", label_style), Paragraph(sale_obj.sale_date.strftime('%d %B, %Y'), value_style)],
     ]
     
+    # Right Column
     right_data = [
-        [Paragraph(f"<b>Customer:</b> {sale_obj.customer.name}", styles['Normal'])],
-        [Paragraph(f"<b>Address:</b> {sale_obj.customer.address or '-'}", styles['Normal'])],
+        [Paragraph("<b>Customer Name:</b>", label_style), Paragraph(sale_obj.customer.name, value_style)],
+        [Paragraph("<b>Customer Code:</b>", label_style), Paragraph(sale_obj.customer.customer_code or 'N/A', value_style)],
     ]
     
-    left_table = Table(left_data, colWidths=[3*inch])
-    right_table = Table(right_data, colWidths=[3*inch])
+    if sale_obj.customer.address:
+        left_data.append([Paragraph("<b>Address:</b>", label_style), Paragraph(sale_obj.customer.address[:50], label_style)])
+    
+    left_table = Table(left_data, colWidths=[1.2*inch, 2.5*inch])
+    right_table = Table(right_data, colWidths=[1.2*inch, 2.5*inch])
     
     left_table.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
     ]))
     
     right_table.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
     ]))
     
-    header_table = Table([[left_table, right_table]], colWidths=[3.5*inch, 3.5*inch])
-    story.append(header_table)
-    story.append(Spacer(1, 0.3*inch))
+    info_table = Table([[left_table, right_table]], colWidths=[4*inch, 3.5*inch])
+    info_table.setStyle(TableStyle([
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+    ]))
+    story.append(info_table)
+    story.append(Spacer(1, 0.15*inch))
     
-    # Items Table
-    table_data = [['S.No', 'Product', 'Qty', 'Unit', 'Price', 'Discount', 'Total']]
+    # ============================================
+    # ITEMS TABLE
+    # ============================================
+    
+    table_data = [['#', 'Product', 'Qty', 'Unit', 'Unit Price', 'Total']]
     
     total_before_discount = Decimal('0.0')
-    total_discount = Decimal('0.0')
     
     for idx, item in enumerate(sale_obj.saleitem_set.all(), 1):
-        item_discount = item.discount if hasattr(item, 'discount') else Decimal('0.0')
-        item_total = item.total_amt - item_discount
+        item_total = item.total_amt
         table_data.append([
             str(idx),
             item.product.name,
             f"{item.qty:,.2f}",
             item.product.unit.name if item.product.unit else '-',
-            f"{item.price:,.2f}",
-            f"{item_discount:,.2f}",
-            f"{item_total:,.2f}"
+            f"Rs. {item.price:,.2f}",
+            f"Rs. {item_total:,.2f}"
         ])
-        total_before_discount += item.total_amt
-        total_discount += item_discount
+        total_before_discount += item_total
     
-    # Summary Rows
-    table_data.append(['', '', '', '', 'Subtotal:', '', f"{total_before_discount:,.2f}"])
-    table_data.append(['', '', '', '', 'Discount:', '', f"{total_discount:,.2f}"])
-    table_data.append(['', '', '', '', 'Grand Total:', '', f"{sale_obj.total_amount():,.2f}"])
-    table_data.append(['', '', '', '', 'Paid:', '', f"{sale_obj.paid:,.2f}"])
-    table_data.append(['', '', '', '', 'Outstanding:', '', f"{sale_obj.outstanding_balance():,.2f}"])
+    discount_value = sale_obj.discount_value
+    total_amount = sale_obj.total_amount()
+    paid_amount = sale_obj.paid
+    outstanding = sale_obj.outstanding_balance()
     
-    col_widths = [0.5*inch, 2.5*inch, 0.8*inch, 0.8*inch, 1*inch, 1*inch, 1*inch]
+    table_data.append(['', '', '', '', 'Subtotal:', f"Rs. {total_before_discount:,.2f}"])
+    if discount_value > 0:
+        table_data.append(['', '', '', '', 'Discount:', f"Rs. {discount_value:,.2f}"])
+    table_data.append(['', '', '', '', 'Grand Total:', f"Rs. {total_amount:,.2f}"])
+    
+    # Payment Methods
+    payments = sale_obj.payments.all()
+    if payments.exists():
+        table_data.append(['', '', '', '', '', ''])
+        table_data.append(['', '', '', '', 'Payment Details:', ''])
+        for payment in payments:
+            method_name = payment.method.get_name_display() if payment.method else str(payment.method)
+            ref_text = f" (Ref: {payment.reference_no})" if payment.reference_no else ""
+            table_data.append(['', '', '', '', f'{method_name}{ref_text}:', f"Rs. {payment.amount:,.2f}"])
+        table_data.append(['', '', '', '', 'Total Paid:', f"Rs. {paid_amount:,.2f}"])
+        if outstanding > 0:
+            table_data.append(['', '', '', '', 'Outstanding:', f"Rs. {outstanding:,.2f}"])
+        elif outstanding < 0:
+            change_amount = abs(outstanding)
+            table_data.append(['', '', '', '', 'Change Return:', f"Rs. {change_amount:,.2f}"])
+    else:
+        table_data.append(['', '', '', '', 'Paid:', f"Rs. {paid_amount:,.2f}"])
+        table_data.append(['', '', '', '', 'Outstanding:', f"Rs. {outstanding:,.2f}"])
+    
+    col_widths = [0.4*inch, 2.2*inch, 0.6*inch, 0.6*inch, 0.9*inch, 1.2*inch]
+    
     items_table = Table(table_data, repeatRows=1, colWidths=col_widths)
     
-    items_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#333333')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('ALIGN', (4, 1), (-1, -1), 'RIGHT'),
+    table_style = [
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a1d2e')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-        ('GRID', (0, 0), (-1, -4), 0.5, colors.black),
-        ('LINEBELOW', (4, -5), (-1, -5), 1, colors.black),
-        ('FONTNAME', (0, -4), (-1, -1), 'Helvetica-Bold'),
-    ]))
+        ('FONTSIZE', (0, 0), (-1, 0), 9),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, 0), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, 0), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+        
+        ('FONTSIZE', (0, 1), (-1, -5), 8),
+        ('VALIGN', (0, 1), (-1, -5), 'MIDDLE'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -5), [colors.white, colors.HexColor('#f8f9fc')]),
+        
+        ('GRID', (0, 0), (-1, -5), 0.5, colors.HexColor('#e0e3eb')),
+        
+        ('ALIGN', (2, 1), (5, -5), 'RIGHT'),
+        ('ALIGN', (0, 1), (0, -5), 'CENTER'),
+        
+        ('LINEABOVE', (4, -5), (5, -5), 1, colors.HexColor('#dee2e6')),
+        ('FONTNAME', (4, -4), (5, -1), 'Helvetica-Bold'),
+        ('BACKGROUND', (4, -1), (5, -1), colors.HexColor('#e8ecf4')),
+    ]
     
+    items_table.setStyle(TableStyle(table_style))
     story.append(items_table)
-    story.append(Spacer(1, 0.3*inch))
-    
-    # Footer
-    footer_text = company.footer_note if company and company.footer_note else "Thank you for your business!"
-    story.append(Paragraph(footer_text, styles['Normal']))
-    story.append(Paragraph("This is a computer generated invoice - no signature required.", styles['Normal']))
-    
     story.append(Spacer(1, 0.2*inch))
-    story.append(Paragraph("<b>Terms & Conditions:</b>", styles['Normal']))
-    story.append(Paragraph("1. Goods once sold will not be taken back.", styles['Normal']))
-    story.append(Paragraph("2. All disputes subject to local jurisdiction.", styles['Normal']))
+    
+    # ============================================
+    # ✅ AMOUNT IN WORDS (ADDED)
+    # ============================================
+    
+    def number_to_words(amount):
+        """Convert number to words"""
+        try:
+            from num2words import num2words
+            return num2words(amount, lang='en').title()
+        except ImportError:
+            # Simple conversion if num2words not installed
+            return f"{amount:,.2f}"
+        except:
+            return f"{amount:,.2f}"
+    
+    amount_in_words = number_to_words(total_amount)
+    
+    # Amount in Words Box
+    words_style = ParagraphStyle(
+        'WordsStyle',
+        parent=styles['Normal'],
+        fontSize=9,
+        textColor=colors.HexColor('#28a745'),
+        fontName='Helvetica-Bold',
+        backColor=colors.HexColor('#e8f5e9'),
+        borderPadding=5,
+        borderWidth=1,
+        borderColor=colors.HexColor('#28a745'),
+        borderRadius=5
+    )
+    
+    story.append(Paragraph(f"<b>Amount in Words:</b> {amount_in_words} Only.", words_style))
+    story.append(Spacer(1, 0.2*inch))
+    
+    # ============================================
+    # FOOTER SECTION
+    # ============================================
+    
+    footer_line = Table([['']], colWidths=[6.5*inch])
+    footer_line.setStyle(TableStyle([
+        ('LINEABOVE', (0, 0), (-1, 0), 1, colors.HexColor('#667eea')),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+    ]))
+    story.append(footer_line)
+    
+    thank_style = ParagraphStyle(
+        'ThankYou',
+        parent=styles['Normal'],
+        fontSize=11,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor('#667eea'),
+        fontName='Helvetica-Bold',
+        spaceAfter=5
+    )
+    story.append(Paragraph("Thank you for your business!", thank_style))
+    
+    footer_note = company.footer_note if company and company.footer_note else "This is a computer generated invoice. No signature required."
+    story.append(Paragraph(footer_note, subtitle_style))
+    story.append(Spacer(1, 0.1*inch))
+    
+    story.append(Paragraph("<b>Terms & Conditions:</b>", label_style))
+    story.append(Paragraph("1. Goods once sold will not be taken back.", label_style))
+    story.append(Paragraph("2. All disputes subject to local jurisdiction.", label_style))
+    story.append(Paragraph("3. Please retain this invoice for warranty claims.", label_style))
+    story.append(Spacer(1, 0.1*inch))
+    
+    generated_date = datetime.now().strftime('%d %B, %Y at %I:%M %p')
+    story.append(Paragraph(f"<font size='7' color='#adb5bd'>Generated on: {generated_date}</font>", subtitle_style))
     
     doc.build(story)
     buffer.seek(0)
     return buffer
 
+class EmiPaymentInline(admin.TabularInline):
+    model = EmiPayment
+    fields = ('installment_number', 'due_date', 'amount_due', 'amount_paid', 'status', 'payment_date', 'reference_no')
+    readonly_fields = ('installment_number', 'due_date', 'amount_due')
+    extra = 0
+    can_delete = False
+    
+    def get_readonly_fields(self, request, obj=None):
+        if obj and obj.status == 'paid':
+            return self.readonly_fields + ('amount_paid', 'status')
+        return self.readonly_fields
+
+
+@admin.register(InstallmentPlan, site=admin.site)
+class InstallmentPlanAdmin(admin.ModelAdmin):
+    list_display = ('name', 'duration_months', 'down_payment_percent', 'interest_rate', 'late_fee_per_day', 'is_active', 'created_at')
+    list_editable = ('is_active',)
+    list_filter = ('is_active', 'duration_months')
+    search_fields = ('name',)
+    ordering = ('duration_months',)
+    
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('name', 'duration_months', 'is_active')
+        }),
+        ('Payment Terms', {
+            'fields': ('down_payment_percent', 'interest_rate', 'late_fee_per_day'),
+            'description': 'Down payment % of total amount | Interest rate % per annum | Late fee Rs. per day'
+        }),
+    )
+
+
+@admin.register(SaleInstallment, site=admin.site)
+class SaleInstallmentAdmin(admin.ModelAdmin):
+    list_display = ('sale_bill_no', 'customer_name', 'plan', 'total_amount_display', 
+                    'down_payment_status', 'total_paid_display', 'remaining_display', 
+                    'status', 'next_due_date', 'payment_progress_bar')
+    list_filter = ('status', 'plan', 'down_payment_paid', 'start_date')
+    search_fields = ('sale__bill_no', 'sale__customer__name', 'sale__customer__customer_code')
+    inlines = [EmiPaymentInline]
+    readonly_fields = ('total_amount', 'loan_amount', 'emi_amount', 'total_interest', 
+                       'total_payable', 'late_fee_accrued', 'created_at', 'updated_at')
+    actions = ['generate_emi_schedule', 'send_payment_reminders', 'mark_as_defaulted', 'export_installment_report']
+    change_list_template = "admin/button.html"
+    
+    fieldsets = (
+        ('Sale Information', {
+            'fields': ('sale', 'plan', 'status')
+        }),
+        ('Amount Breakdown', {
+            'fields': ('total_amount', 'down_payment_amount', 'down_payment_paid', 
+                      'loan_amount', 'emi_amount', 'total_interest', 'total_payable')
+        }),
+        ('Dates', {
+            'fields': ('start_date', 'end_date', 'next_due_date')
+        }),
+        ('Late Fees', {
+            'fields': ('late_fee_accrued', 'late_fee_paid'),
+            'classes': ('collapse',)
+        }),
+        ('Tracking', {
+            'fields': ('created_at', 'updated_at', 'created_by'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def sale_bill_no(self, obj):
+        url = reverse('admin:app_sale_change', args=[obj.sale.id])
+        return format_html('<a href="{}">{}</a>', url, obj.sale.bill_no)
+    sale_bill_no.short_description = "Bill No"
+    
+    def customer_name(self, obj):
+        return obj.sale.customer.name
+    customer_name.short_description = "Customer"
+    
+    def total_amount_display(self, obj):
+        return f"Rs. {obj.total_amount:,.2f}"
+    total_amount_display.short_description = "Total Amount"
+    
+    def down_payment_status(self, obj):
+        if obj.down_payment_paid:
+            return format_html('<span style="color: #28a745;">✅ Paid</span>')
+        return format_html('<span style="color: #dc3545;">❌ Pending</span>')
+    down_payment_status.short_description = "Down Payment"
+    
+    def total_paid_display(self, obj):
+        return f"Rs. {obj.total_paid():,.2f}"
+    total_paid_display.short_description = "Total Paid"
+    
+    def remaining_display(self, obj):
+        remaining = obj.remaining_amount()
+        if remaining <= 0:
+            return format_html('<span style="color: #28a745;">Rs. 0.00</span>')
+        elif remaining > 0:
+            return format_html('<span style="color: #dc3545;">Rs. {:.2f}</span>', remaining)
+        return f"Rs. {remaining:,.2f}"
+    remaining_display.short_description = "Remaining"
+    
+    def payment_progress_bar(self, obj):
+        """Show payment progress bar"""
+        if obj.total_payable > 0:
+            percent = (obj.total_paid() / obj.total_payable) * 100
+            color = '#28a745' if percent >= 100 else '#ffc107' if percent >= 50 else '#dc3545'
+            return format_html(
+                '<div style="width:100px; background:#e0e0e0; border-radius:10px; overflow:hidden;">'
+                '<div style="width:{}%; background:{}; height:8px; border-radius:10px;"></div>'
+                '</div><small>{}%</small>',
+                percent, color, round(percent, 1)
+            )
+        return "-"
+    payment_progress_bar.short_description = "Progress"
+    
+    # ============================================
+    # ACTIONS
+    # ============================================
+    
+    def generate_emi_schedule(self, request, queryset):
+        """Generate EMI schedule for selected installments"""
+        count = 0
+        for installment in queryset:
+            if not installment.emi_payments.exists() and installment.plan:
+                for i in range(1, installment.plan.duration_months + 1):
+                    due_date = installment.start_date + timedelta(days=30 * i)
+                    EmiPayment.objects.create(
+                        installment=installment,
+                        installment_number=i,
+                        due_date=due_date,
+                        amount_due=installment.emi_amount
+                    )
+                count += 1
+        self.message_user(request, f"✅ EMI schedules generated for {count} installments!")
+    generate_emi_schedule.short_description = "📅 Generate EMI Schedule"
+    
+    def send_payment_reminders(self, request, queryset):
+        """Send WhatsApp payment reminders"""
+        from .whatsapp_utils import WhatsAppSender
+        
+        count = 0
+        for installment in queryset:
+            pending_emi = installment.next_emi_due()
+            if pending_emi and pending_emi.status == 'pending' and installment.sale.customer.contact_number:
+                message = f"""📱 *EMI REMINDER*
+
+Customer: {installment.sale.customer.name}
+Bill No: {installment.sale.bill_no}
+EMI #{pending_emi.installment_number} Due: Rs. {pending_emi.amount_due:,.2f}
+Due Date: {pending_emi.due_date}
+Remaining Balance: Rs. {installment.remaining_amount():,.2f}
+
+⚠️ Late fee of Rs. {installment.plan.late_fee_per_day}/day will apply after due date.
+
+Please clear your payment on time!"""
+                
+                result = WhatsAppSender.send_direct_message(
+                    installment.sale.customer.contact_number,
+                    message
+                )
+                if result.get('success'):
+                    count += 1
+        
+        self.message_user(request, f"✅ {count} reminders sent!")
+    send_payment_reminders.short_description = "📱 Send Payment Reminders"
+    
+    def mark_as_defaulted(self, request, queryset):
+        """Mark selected installments as defaulted"""
+        count = queryset.update(status='defaulted')
+        self.message_user(request, f"⚠️ {count} installments marked as defaulted!")
+    mark_as_defaulted.short_description = "⚠️ Mark as Defaulted"
+    
+    def export_installment_report(self, request, queryset):
+        """Export installment report as Excel"""
+        import openpyxl
+        from openpyxl.styles import Font, Alignment, PatternFill
+        from django.http import HttpResponse
+        
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Installment Report"
+        
+        # Headers
+        headers = ['Bill No', 'Customer', 'Plan', 'Total Amount', 'Down Payment', 
+                   'EMI Amount', 'Total Paid', 'Remaining', 'Status', 'Start Date', 'Next Due']
+        ws.append(headers)
+        
+        # Style headers
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        for col in range(1, len(headers) + 1):
+            cell = ws.cell(row=1, column=col)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+        
+        # Add data
+        for inst in queryset:
+            ws.append([
+                inst.sale.bill_no,
+                inst.sale.customer.name,
+                inst.plan.name if inst.plan else '-',
+                float(inst.total_amount),
+                float(inst.down_payment_amount),
+                float(inst.emi_amount),
+                float(inst.total_paid()),
+                float(inst.remaining_amount()),
+                inst.get_status_display(),
+                inst.start_date.strftime('%d-%m-%Y'),
+                inst.next_due_date.strftime('%d-%m-%Y') if inst.next_due_date else '-',
+            ])
+        
+        # Adjust column widths
+        for col in ws.columns:
+            max_length = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 30)
+            ws.column_dimensions[col_letter].width = adjusted_width
+        
+        response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        response['Content-Disposition'] = 'attachment; filename="installment_report.xlsx"'
+        wb.save(response)
+        return response
+    export_installment_report.short_description = "📊 Export to Excel"
+    
+    def save_model(self, request, obj, form, change):
+        if not obj.created_by:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+
+@admin.register(EmiPayment, site=admin.site)
+class EmiPaymentAdmin(admin.ModelAdmin):
+    list_display = ('installment_sale_bill', 'installment_number', 'due_date', 'amount_due_display', 
+                    'amount_paid_display', 'status', 'payment_date', 'is_overdue_display')
+    list_filter = ('status', 'payment_date', 'due_date')
+    search_fields = ('installment__sale__bill_no', 'installment__sale__customer__name')
+    readonly_fields = ('installment', 'installment_number', 'due_date', 'amount_due')
+    actions = ['mark_as_paid']
+    
+    fieldsets = (
+        ('EMI Information', {
+            'fields': ('installment', 'installment_number', 'due_date', 'amount_due')
+        }),
+        ('Payment Details', {
+            'fields': ('amount_paid', 'payment_date', 'payment_method', 'reference_no', 'status', 'notes')
+        }),
+        ('Late Fee', {
+            'fields': ('late_fee_charged',),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def installment_sale_bill(self, obj):
+        return obj.installment.sale.bill_no
+    installment_sale_bill.short_description = "Bill No"
+    
+    def amount_due_display(self, obj):
+        return f"Rs. {obj.amount_due:,.2f}"
+    amount_due_display.short_description = "Amount Due"
+    
+    def amount_paid_display(self, obj):
+        if obj.amount_paid >= obj.amount_due:
+            return format_html('<span style="color: #28a745;">Rs. {:.2f}</span>', obj.amount_paid)
+        elif obj.amount_paid > 0:
+            return format_html('<span style="color: #ff9800;">Rs. {:.2f}</span>', obj.amount_paid)
+        return f"Rs. {obj.amount_paid:,.2f}"
+    amount_paid_display.short_description = "Amount Paid"
+    
+    def is_overdue_display(self, obj):
+        if obj.is_overdue():
+            days = (now().date() - obj.due_date).days
+            return format_html('<span style="color: #dc3545;">⚠️ {} days overdue</span>', days)
+        return format_html('<span style="color: #28a745;">✅ On time</span>')
+    is_overdue_display.short_description = "Overdue"
+    
+    def mark_as_paid(self, request, queryset):
+        """Mark selected EMIs as paid"""
+        count = 0
+        for emi in queryset.filter(status='pending'):
+            emi.mark_paid(emi.amount_due)
+            count += 1
+        self.message_user(request, f"✅ {count} EMIs marked as paid!")
+    mark_as_paid.short_description = "✅ Mark as Paid"
+    
+    def has_add_permission(self, request):
+        return False  # EMIs are auto-generated from installment
+
+@admin.register(DailyClosing, site=admin.site)
+class DailyClosingAdmin(admin.ModelAdmin):
+    list_display = ('closing_date', 'opening_cash', 'cash_sales', 'total_sales', 'closing_cash', 'cash_difference', 'is_closed')
+    list_filter = ('is_closed', 'closing_date')
+    readonly_fields = ('cash_sales', 'card_sales', 'jazzcash_sales', 'easypaisa_sales', 'bank_transfer_sales', 'cash_difference', 'total_sales_today')
+    
+    def total_sales(self, obj):
+        return f"Rs. {obj.total_sales_today():,.2f}"
+    total_sales.short_description = 'Total Sales'
+
+
+@admin.register(DailyClosingExpense, site=admin.site)
+class DailyClosingExpenseAdmin(admin.ModelAdmin):
+    list_display = ('closing', 'description', 'amount', 'category')
+
+@admin.register(PaymentMethod, site=admin.site)
+class PaymentMethodAdmin(admin.ModelAdmin):
+    list_display = ('name', 'is_active')
+    list_editable = ('is_active',)
+
+
+@admin.register(SalePayment, site=admin.site)
+class SalePaymentAdmin(admin.ModelAdmin):
+    list_display = ('sale', 'method', 'amount', 'payment_date', 'created_by')
+    list_filter = ('method', 'payment_date')
+    readonly_fields = ('payment_date',)
 
 class CustomAdminSite(admin.AdminSite):
     """Custom Admin Site for Adding Backup/Restore/Delete View"""
 
     index_template = "admin/custom_index.html"
 
+    def get_default_backup_dir(self):
+        """Get default backup directory based on platform"""
+        import platform
+        
+        if platform.system() == 'Linux' and os.path.exists('/storage/emulated/0/'):
+            return '/storage/emulated/0/Download/Backups/'
+        elif platform.system() == 'Windows':
+            return os.path.join(os.path.expanduser('~'), 'Documents', 'Backups')
+        else:
+            return os.path.join(os.path.expanduser('~'), 'Backups')
+
+    def get_active_backup_dir(self, request):
+        """Get current backup directory (session ya default)"""
+        session_path = request.session.get('backup_dir', '')
+        if session_path and os.path.exists(session_path):
+            return session_path
+        
+        default = self.get_default_backup_dir()
+        os.makedirs(default, exist_ok=True)
+        return default
+
+    # ============================================
+    # URLS
+    # ============================================
     def get_urls(self):
         urls = super().get_urls()
         custom_urls = [
@@ -187,6 +1201,7 @@ class CustomAdminSite(admin.AdminSite):
             path('backup-db/', self.admin_view(self.backup_database), name='backup-db'),
             path('restore-db/', self.admin_view(self.restore_database), name='restore-db'),
             path('delete-backup/<str:filename>/', self.admin_view(self.delete_backup), name='delete-backup'),
+            path('set-backup-dir/', self.admin_view(self.set_backup_dir), name='set-backup-dir'),
             
             # Invoice & Documents
             path('invoice/<int:sale_id>/', self.admin_view(self.invoice_view), name='generate_invoice'),
@@ -194,9 +1209,12 @@ class CustomAdminSite(admin.AdminSite):
             path('grn-pdf/<int:grn_id>/', self.admin_view(self.grn_pdf_view), name='generate_grn_pdf'),
             path('audit-pdf/<int:audit_id>/', self.admin_view(self.audit_pdf_view), name='generate_audit_pdf'),
             
-            # Barcode
+            # Barcode & Search
             path('find-product-by-barcode/', self.admin_view(self.find_product_by_barcode_view), name='find_product_by_barcode'),
+            path('find-product-by-serial/', self.admin_view(self.find_product_by_serial_view), name='find_product_by_serial'),
             path('get-product-price/', self.admin_view(self.get_product_price_view), name='get_product_price'),
+            path('get-batch-selling-price/', self.admin_view(self.get_batch_selling_price_view), name='get_batch_selling_price'),
+            path('get-next-bill-no/', self.admin_view(self.get_next_bill_no), name='get-next-bill-no'),
             path('app/product/supplier-barcode/', self.admin_view(self.supplier_barcode_view), name='supplier_barcode'),
             path('set-supplier-barcode/', self.admin_view(self.set_supplier_barcode), name='set_supplier_barcode'),
             
@@ -210,55 +1228,209 @@ class CustomAdminSite(admin.AdminSite):
             
             # System Health
             path('system-health/', self.admin_view(self.system_health_view), name='system-health'),
+            
+            # Range Reports
+            path('reports/range/', self.admin_view(self.range_report_view), name='range_report'),
+            path('reports/range/pdf/', self.admin_view(self.range_report_pdf), name='range_report_pdf'),
+            
+            # WhatsApp
+            path('whatsapp/send/', self.admin_view(self.whatsapp_view), name='whatsapp_send'),
+            path('whatsapp/reminders/', self.admin_view(self.whatsapp_reminders_view), name='whatsapp_reminders'),
+            path('whatsapp/daily-summary/', self.admin_view(self.whatsapp_daily_summary_view), name='whatsapp_daily'),
         ]
         return custom_urls + urls
 
     # ============================================
     # BACKUP METHODS
     # ============================================
-    def get_backup_files(self):
+    
+    def get_backup_files(self, request):
+        """Get list of backup files from active backup directory"""
         try:
-            files = os.listdir(BACKUP_DIR)
-            files = sorted(files, key=lambda x: os.path.getmtime(os.path.join(BACKUP_DIR, x)), reverse=True)
+            backup_path = self.get_active_backup_dir(request)
+            if not os.path.exists(backup_path):
+                return []
+            files = os.listdir(backup_path)
+            files = [f for f in files if f.endswith(('.dump', '.sql', '.json', '.gz', '.sqlite'))]
+            files = sorted(files, key=lambda x: os.path.getmtime(os.path.join(backup_path, x)), reverse=True)
             return files
-        except FileNotFoundError:
+        except Exception:
             return []
 
+    def set_backup_dir(self, request):
+        """AJAX: User se folder path lo aur session mein save karo"""
+        from django.http import JsonResponse
+        import json
+        
+        if request.method == 'POST':
+            try:
+                data = json.loads(request.body)
+                backup_path = data.get('path', '').strip()
+            except:
+                backup_path = request.POST.get('path', '').strip()
+            
+            if backup_path:
+                try:
+                    os.makedirs(backup_path, exist_ok=True)
+                except OSError as e:
+                    return JsonResponse({'success': False, 'message': f'❌ Cannot create folder: {e}'})
+                
+                request.session['backup_dir'] = backup_path
+                request.session.modified = True
+                
+                return JsonResponse({
+                    'success': True, 
+                    'message': f'✅ Backup folder set: {backup_path}',
+                    'path': backup_path
+                })
+            else:
+                return JsonResponse({'success': False, 'message': '❌ Please enter a valid path'})
+        
+        return JsonResponse({'success': False, 'message': 'Invalid request'})
+
     def database_backup_view(self, request):
+        """Backup page view"""
         if not request.user.is_superuser:
             return HttpResponseForbidden("You are not allowed to access this page.")
+        
+        backup_path = self.get_active_backup_dir(request)
+        backup_files = self.get_backup_files(request)
+        
+        import platform
+        is_android = platform.system() == 'Linux' and os.path.exists('/storage/emulated/0/')
+        is_windows = platform.system() == 'Windows'
+        
         context = {
             **self.each_context(request),
-            "title": "Database Backup",
-            "backup_files": self.get_backup_files(),
-            "backup_dir": BACKUP_DIR
+            "title": "Database Backup & Restore",
+            "backup_files": backup_files,
+            "backup_dir": backup_path,
+            "is_android": is_android,
+            "is_windows": is_windows,
         }
         return TemplateResponse(request, "admin/database_backup.html", context)
 
     def backup_database(self, request):
+        """Create backup"""
+        backup_path = self.get_active_backup_dir(request)
+        os.makedirs(backup_path, exist_ok=True)
+        
         try:
-            subprocess.run(["python", "manage.py", "dbbackup"], check=True)
-            messages.success(request, "✅ Database backup successfully created!")
-        except subprocess.CalledProcessError:
-            messages.error(request, "❌ Error while creating database backup.")
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_file = os.path.join(backup_path, f'db_backup_{timestamp}.json')
+            
+            result = subprocess.run(
+                ['python', 'manage.py', 'dumpdata', '--exclude', 'auth.permission', 
+                 '--exclude', 'contenttypes', '--indent', '2', '--output', backup_file],
+                check=True, capture_output=True, text=True
+            )
+            
+            success_msg = f"✅ Database backup created!\n📁 {backup_file}"
+            
+            if 'sqlite' in settings.DATABASES['default']['ENGINE']:
+                db_path = settings.DATABASES['default']['NAME']
+                if os.path.exists(db_path):
+                    sqlite_backup = os.path.join(backup_path, f'db_backup_{timestamp}.sqlite')
+                    shutil.copy2(db_path, sqlite_backup)
+                    success_msg += f"\n📁 {sqlite_backup}"
+            
+            messages.success(request, success_msg)
+        except subprocess.CalledProcessError as e:
+            messages.error(request, f"❌ Error while creating backup: {e.stderr}")
+        except Exception as e:
+            messages.error(request, f"❌ Error: {str(e)}")
+        
         return redirect("admin:database-backup")
 
     def restore_database(self, request):
-        try:
-            subprocess.run(["python", "manage.py", "dbrestore", "--noinput"], check=True)
-            messages.success(request, "✅ Database restored successfully!")
-        except subprocess.CalledProcessError:
-            messages.error(request, "❌ Error while restoring database.")
+        """Restore database from backup"""
+        if request.method == 'POST':
+            backup_file = request.POST.get('backup_file', '')
+            backup_path = self.get_active_backup_dir(request)
+            full_path = os.path.join(backup_path, backup_file)
+            
+            if '..' in backup_file or '/' in backup_file or '\\' in backup_file:
+                messages.error(request, "❌ Invalid filename")
+                return redirect("admin:database-backup")
+            
+            if not backup_file or not os.path.exists(full_path):
+                messages.error(request, f"❌ Backup file not found: {backup_file}")
+                return redirect("admin:database-backup")
+            
+            try:
+                if backup_file.endswith('.json'):
+                    result = subprocess.run(
+                        ['python', 'manage.py', 'loaddata', full_path],
+                        check=True, capture_output=True, text=True
+                    )
+                    messages.success(request, f"✅ Database restored from {backup_file}")
+                
+                elif backup_file.endswith('.sqlite'):
+                    if 'sqlite' in settings.DATABASES['default']['ENGINE']:
+                        db_path = settings.DATABASES['default']['NAME']
+                        safety_backup = db_path + '.before_restore'
+                        shutil.copy2(db_path, safety_backup)
+                        shutil.copy2(full_path, db_path)
+                        messages.success(request, f"✅ SQLite database restored!\n⚠ Old DB saved as .before_restore")
+                    else:
+                        messages.error(request, "❌ Not a SQLite database")
+                
+                else:
+                    messages.error(request, f"❌ Unsupported format: {backup_file}")
+                    
+            except subprocess.CalledProcessError as e:
+                messages.error(request, f"❌ Error: {e.stderr}")
+            except Exception as e:
+                messages.error(request, f"❌ Error: {str(e)}")
+        
         return redirect("admin:database-backup")
 
     def delete_backup(self, request, filename):
-        file_path = os.path.join(BACKUP_DIR, filename)
+        """Delete a backup file"""
+        backup_path = self.get_active_backup_dir(request)
+        
+        if '..' in filename or '/' in filename or '\\' in filename:
+            messages.error(request, "❌ Invalid filename")
+            return redirect("admin:database-backup")
+        
+        file_path = os.path.join(backup_path, filename)
         if os.path.exists(file_path):
             os.remove(file_path)
-            messages.success(request, f"🗑️ Backup file '{filename}' deleted successfully!")
+            messages.success(request, f"🗑️ Backup file '{filename}' deleted!")
         else:
-            messages.error(request, f"❌ Error: Backup file '{filename}' not found!")
+            messages.error(request, f"❌ File not found: '{filename}'")
         return redirect("admin:database-backup")
+
+    # ============================================
+    # GET NEXT BILL NUMBER
+    # ============================================
+    def get_next_bill_no(self, request):
+        from django.http import JsonResponse
+        
+        prefix = request.GET.get('prefix', '')
+        today = datetime.now().strftime('%Y%m%d')
+        
+        if not prefix:
+            prefix = f'INV-{today}'
+        
+        try:
+            last_sale = Sale.objects.filter(
+                bill_no__startswith=prefix
+            ).order_by('-bill_no').first()
+            
+            if last_sale:
+                try:
+                    last_num = int(last_sale.bill_no.split('-')[-1])
+                    new_num = str(last_num + 1).zfill(4)
+                except (ValueError, IndexError):
+                    new_num = '0001'
+            else:
+                new_num = '0001'
+            
+            bill_no = f'{prefix}-{new_num}'
+            return JsonResponse({'success': True, 'bill_no': bill_no})
+        except Exception as e:
+            return JsonResponse({'success': False, 'message': str(e)})
 
     # ============================================
     # DOCUMENT VIEWS
@@ -271,79 +1443,179 @@ class CustomAdminSite(admin.AdminSite):
         return response
 
     def challan_pdf_view(self, request, challan_id):
-        from .models import DeliveryChallan
         challan = get_object_or_404(DeliveryChallan, pk=challan_id)
         admin_obj = DeliveryChallanAdmin(DeliveryChallan, self)
         return admin_obj.generate_challan_pdf(request, DeliveryChallan.objects.filter(pk=challan_id))
 
     def grn_pdf_view(self, request, grn_id):
-        from .models import GoodsReceivedNote
         grn = get_object_or_404(GoodsReceivedNote, pk=grn_id)
         admin_obj = GoodsReceivedNoteAdmin(GoodsReceivedNote, self)
         return admin_obj.generate_grn_pdf(request, GoodsReceivedNote.objects.filter(pk=grn_id))
 
     def audit_pdf_view(self, request, audit_id):
-        from .models import StockAudit
         audit = get_object_or_404(StockAudit, pk=audit_id)
         admin_obj = StockAuditAdmin(StockAudit, self)
         return admin_obj.generate_audit_pdf(request, StockAudit.objects.filter(pk=audit_id))
 
     # ============================================
-    # BARCODE METHODS
+    # BARCODE & SERIAL SEARCH
     # ============================================
     def find_product_by_barcode_view(self, request):
         from django.http import JsonResponse
-        from .models import Product
         import re
+        
         barcode = request.GET.get('barcode', '').strip()
         barcode = re.sub(r'[^0-9]', '', barcode)
+        
         if not barcode:
             return JsonResponse({'success': False, 'message': 'No barcode provided'})
+        
         try:
             product = Product.objects.get(barcode=barcode)
-            return JsonResponse({'success': True, 'product': {'id': product.id, 'name': product.name, 'barcode': product.barcode, 'price': str(product.price)}})
+            return JsonResponse({
+                'success': True,
+                'product': {
+                    'id': product.id,
+                    'name': product.name,
+                    'barcode': product.barcode,
+                    'serial_no': product.serial_no or '',
+                    'price': str(product.price)
+                }
+            })
         except Product.DoesNotExist:
             return JsonResponse({'success': False, 'message': 'Product not found'})
 
+    def find_product_by_serial_view(self, request):
+        """AJAX view to find product by serial number"""
+        from django.http import JsonResponse
+        
+        serial = request.GET.get('serial', '').strip()
+        
+        if not serial:
+            return JsonResponse({'success': False, 'message': 'No serial number provided'})
+        
+        try:
+            product = Product.objects.get(serial_no__iexact=serial)
+            return JsonResponse({
+                'success': True,
+                'product': {
+                    'id': product.id,
+                    'name': product.name,
+                    'serial_no': product.serial_no,
+                    'barcode': product.barcode or '',
+                    'price': str(product.price)
+                }
+            })
+        except Product.DoesNotExist:
+            return JsonResponse({'success': False, 'message': 'Product not found with this serial number'})
+
     def get_product_price_view(self, request):
         from django.http import JsonResponse
-        from .models import Product
+        
         product_id = request.GET.get('product_id')
         if product_id:
             try:
                 product = Product.objects.get(pk=product_id)
-                return JsonResponse({'success': True, 'price': str(product.price), 'name': product.name})
+                return JsonResponse({
+                    'success': True,
+                    'price': str(product.price),
+                    'name': product.name
+                })
             except Product.DoesNotExist:
                 pass
         return JsonResponse({'success': False})
 
+    # ============================================
+    # ✅ BATCH SELLING PRICE API (NEW!)
+    # ============================================
+    def get_batch_selling_price_view(self, request):
+        """Get batch selling price for a product"""
+        from django.http import JsonResponse
+        
+        product_id = request.GET.get('product_id')
+        warehouse_id = request.GET.get('warehouse_id')
+        
+        if not product_id:
+            return JsonResponse({'success': False, 'message': 'Product ID required'})
+        
+        try:
+            product = Product.objects.get(pk=product_id)
+            
+            # ✅ Latest batch dhundo jisme selling price set hai
+            batch = None
+            if warehouse_id:
+                batch = StockBatch.objects.filter(
+                    product=product,
+                    warehouse_id=warehouse_id,
+                    remaining_qty__gt=0,
+                    selling_price__gt=0
+                ).order_by('id').first()
+            else:
+                batch = StockBatch.objects.filter(
+                    product=product,
+                    remaining_qty__gt=0,
+                    selling_price__gt=0
+                ).order_by('id').first()
+            
+            default_price = str(product.price)
+            
+            if batch and batch.selling_price > 0:
+                return JsonResponse({
+                    'success': True,
+                    'price': str(batch.selling_price),
+                    'purchase_price': str(batch.price),
+                    'batch_selling_price': str(batch.selling_price),
+                    'name': product.name,
+                    'has_batch_price': True
+                })
+            else:
+                return JsonResponse({
+                    'success': True,
+                    'price': default_price,
+                    'name': product.name,
+                    'has_batch_price': False
+                })
+                
+        except Product.DoesNotExist:
+            return JsonResponse({'success': False, 'message': 'Product not found'})
+
     def supplier_barcode_view(self, request):
-        from django.shortcuts import render
-        from .models import Product
         ids_str = request.GET.get('ids', '')
         product_ids = [int(id) for id in ids_str.split(',') if id]
         products = Product.objects.filter(id__in=product_ids)
-        return render(request, "admin/supplier_barcode.html", {**self.each_context(request), "title": "Set Supplier Barcode", "products": products})
+        return render(request, "admin/supplier_barcode.html", {
+            **self.each_context(request),
+            "title": "Set Supplier Barcode",
+            "products": products
+        })
 
     def set_supplier_barcode(self, request):
         from django.http import JsonResponse
-        from .models import Product
         import re
+        
         product_id = request.POST.get('product_id')
         barcode = request.POST.get('barcode', '').strip()
+        
         if not product_id or not barcode:
             return JsonResponse({'success': False, 'message': 'Missing data'})
+        
         barcode = re.sub(r'[^0-9]', '', barcode)
         if not barcode:
             return JsonResponse({'success': False, 'message': 'Invalid barcode'})
+        
         try:
             product = Product.objects.get(pk=product_id)
             if Product.objects.filter(barcode=barcode).exclude(pk=product_id).exists():
                 return JsonResponse({'success': False, 'message': '❌ Already used by another product'})
+            
             product.barcode = barcode
             product.use_custom_barcode = True
             product.save()
-            return JsonResponse({'success': True, 'message': f'✅ Barcode set for {product.name}', 'barcode': barcode})
+            return JsonResponse({
+                'success': True,
+                'message': f'✅ Barcode set for {product.name}',
+                'barcode': barcode
+            })
         except Product.DoesNotExist:
             return JsonResponse({'success': False, 'message': 'Product not found'})
 
@@ -351,71 +1623,88 @@ class CustomAdminSite(admin.AdminSite):
     # STATUS UPDATE VIEWS
     # ============================================
     def update_order_status_view(self, request):
-        from django.shortcuts import render
-        from .models import SaleOrder
         ids_str = request.GET.get('ids', '')
         order_ids = [int(id) for id in ids_str.split(',') if id]
         orders = SaleOrder.objects.filter(id__in=order_ids)
+        
         if request.method == 'POST':
             new_status = request.POST.get('status')
             if new_status:
                 orders.update(status=new_status)
                 messages.success(request, f"✅ Updated {orders.count()} orders")
                 return redirect("admin:app_saleorder_changelist")
-        return render(request, "admin/update_order_status.html", {**self.each_context(request), "title": "Update Order Status", "orders": orders, "status_choices": SaleOrder.ORDER_STATUS})
+        
+        return render(request, "admin/update_order_status.html", {
+            **self.each_context(request),
+            "title": "Update Order Status",
+            "orders": orders,
+            "status_choices": SaleOrder.ORDER_STATUS
+        })
 
     def update_po_status_view(self, request):
-        from django.shortcuts import render
-        from .models import PurchaseOrder
         ids_str = request.GET.get('ids', '')
         po_ids = [int(id) for id in ids_str.split(',') if id]
         orders = PurchaseOrder.objects.filter(id__in=po_ids)
+        
         if request.method == 'POST':
             new_status = request.POST.get('status')
             if new_status:
                 orders.update(status=new_status)
                 messages.success(request, f"✅ Updated {orders.count()} POs")
                 return redirect("admin:app_purchaseorder_changelist")
-        return render(request, "admin/update_po_status.html", {**self.each_context(request), "title": "Update PO Status", "orders": orders, "status_choices": PurchaseOrder.ORDER_STATUS})
+        
+        return render(request, "admin/update_po_status.html", {
+            **self.each_context(request),
+            "title": "Update PO Status",
+            "orders": orders,
+            "status_choices": PurchaseOrder.ORDER_STATUS
+        })
 
     # ============================================
     # DASHBOARD
     # ============================================
     def dashboard_view(self, request):
         from datetime import timedelta, date
-        from django.db.models import Sum
         import json
+        
         today = date.today()
         month_ago = today - timedelta(days=30)
+        
         daily_sales = []
         for i in range(30):
             d = today - timedelta(days=29-i)
-            total = Sale.objects.filter(sale_date__date=d).aggregate(t=Sum('saleitem__total_amt'))['t'] or 0
+            total = Sale.objects.filter(sale_date__date=d).aggregate(
+                t=Sum('saleitem__total_amt')
+            )['t'] or 0
             daily_sales.append({'date': d.strftime('%d %b'), 'amount': float(total)})
-        top_products = SaleItem.objects.filter(sale__sale_date__gte=month_ago).values('product__name').annotate(total_qty=Sum('qty'), total_sales=Sum('total_amt')).order_by('-total_sales')[:10]
+        
+        top_products = SaleItem.objects.filter(
+            sale__sale_date__gte=month_ago
+        ).values('product__name').annotate(
+            total_qty=Sum('qty'), total_sales=Sum('total_amt')
+        ).order_by('-total_sales')[:10]
+        
         slow_moving = []
         for inv in Inventory.objects.filter(stock__gt=0):
-            sales_30d = SaleItem.objects.filter(product=inv.product, sale__sale_date__gte=month_ago).aggregate(t=Sum('qty'))['t'] or 0
+            sales_30d = SaleItem.objects.filter(
+                product=inv.product, sale__sale_date__gte=month_ago
+            ).aggregate(t=Sum('qty'))['t'] or 0
             if sales_30d == 0 or (inv.stock > 0 and (sales_30d / inv.stock) < 0.1):
-                slow_moving.append({'name': inv.product.name, 'stock': inv.stock, 'sales_30d': sales_30d, 'warehouse': inv.warehouse.name})
-        today_cash = DailyCashFlow.objects.filter(date=today).first()
-        if not today_cash:
-            today_cash = DailyCashFlow(date=today)
-            today_cash.calculate()
-        weekly_cash = []
-        for i in range(7):
-            d = today - timedelta(days=6-i)
-            cf = DailyCashFlow.objects.filter(date=d).first()
-            if not cf:
-                cf = DailyCashFlow(date=d)
-                cf.calculate()
-            weekly_cash.append({'date': d.strftime('%a'), 'cash_in': float(cf.cash_in), 'cash_out': float(cf.cash_out)})
+                slow_moving.append({
+                    'name': inv.product.name,
+                    'stock': inv.stock,
+                    'sales_30d': sales_30d,
+                    'warehouse': inv.warehouse.name
+                })
+        
         context = {
-            **self.each_context(request), "title": "Dashboard",
-            "daily_sales": json.dumps(daily_sales), "top_products": list(top_products),
-            "slow_moving": slow_moving[:10], "today_cash": today_cash,
-            "weekly_cash": json.dumps(weekly_cash),
-            "total_customers": Customer.objects.count(), "total_products": Product.objects.count(),
+            **self.each_context(request),
+            "title": "Dashboard",
+            "daily_sales": json.dumps(daily_sales),
+            "top_products": list(top_products),
+            "slow_moving": slow_moving[:10],
+            "total_customers": Customer.objects.count(),
+            "total_products": Product.objects.count(),
             "total_sales_today": Sale.objects.filter(sale_date__date=today).count(),
             "total_purchase_today": Purchase.objects.filter(pur_date__date=today).count(),
             "low_stock_count": Inventory.objects.filter(stock__lt=F('product__low_stock_threshold')).count(),
@@ -424,13 +1713,16 @@ class CustomAdminSite(admin.AdminSite):
 
     def sales_forecast_view(self, request):
         from datetime import date, timedelta
-        from django.db.models import Sum
+        
         today = date.today()
         daily_data = []
         for i in range(90):
             d = today - timedelta(days=89-i)
-            total = Sale.objects.filter(sale_date__date=d).aggregate(t=Sum('saleitem__total_amt'))['t'] or 0
+            total = Sale.objects.filter(sale_date__date=d).aggregate(
+                t=Sum('saleitem__total_amt')
+            )['t'] or 0
             daily_data.append(float(total))
+        
         forecast = []
         if len(daily_data) >= 7:
             for i in range(7):
@@ -438,23 +1730,19 @@ class CustomAdminSite(admin.AdminSite):
                 next_date = today + timedelta(days=i+1)
                 forecast.append({'date': next_date.strftime('%d %b'), 'amount': round(avg, 2)})
                 daily_data.append(avg)
-        return TemplateResponse(request, "admin/sales_forecast.html", {**self.each_context(request), "title": "Sales Forecast", "forecast": forecast})
+        
+        return TemplateResponse(request, "admin/sales_forecast.html", {
+            **self.each_context(request),
+            "title": "Sales Forecast",
+            "forecast": forecast
+        })
 
     # ============================================
-    # SYSTEM HEALTH (FULL FEATURED)
+    # SYSTEM HEALTH
     # ============================================
     def system_health_view(self, request):
-        import os
-        from django.conf import settings
-        from datetime import timedelta, date
-        from django.db.models import Sum, Count
-        from django.contrib.sessions.models import Session
-        from django.utils import timezone
-        
-        # CPU
         cpu_percent = 0
         cpu_count = 0
-        cpu_freq = "N/A"
         try:
             with open('/proc/cpuinfo', 'r') as f:
                 cpu_count = sum(1 for line in f if line.startswith('processor'))
@@ -465,17 +1753,11 @@ class CustomAdminSite(admin.AdminSite):
                 total = sum(cpu_values)
                 if total > 0:
                     cpu_percent = round(100 - (idle / total * 100), 1)
-            try:
-                with open('/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq', 'r') as f:
-                    freq_khz = int(f.read().strip())
-                    cpu_freq = f"{round(freq_khz/1000, 1)} MHz"
-            except: pass
-        except: pass
+        except:
+            pass
         
-        # RAM
         ram_total_gb = 0
         ram_used_gb = 0
-        ram_free_gb = 0
         ram_percent = 0
         try:
             mem_info = {}
@@ -491,14 +1773,13 @@ class CustomAdminSite(admin.AdminSite):
             used_kb = total_kb - free_kb - buffers_kb - cached_kb
             ram_total_gb = round(total_kb / (1024**2), 2)
             ram_used_gb = round(used_kb / (1024**2), 2)
-            ram_free_gb = round((free_kb + buffers_kb + cached_kb) / (1024**2), 2)
-            if total_kb > 0: ram_percent = round((used_kb / total_kb) * 100, 1)
-        except: pass
+            if total_kb > 0:
+                ram_percent = round((used_kb / total_kb) * 100, 1)
+        except:
+            pass
         
-        # Disk
         disk_total_gb = 0
         disk_used_gb = 0
-        disk_free_gb = 0
         disk_percent = 0
         try:
             stat = os.statvfs('/storage/emulated/0/')
@@ -507,42 +1788,35 @@ class CustomAdminSite(admin.AdminSite):
             used_bytes = total_bytes - free_bytes
             disk_total_gb = round(total_bytes / (1024**3), 1)
             disk_used_gb = round(used_bytes / (1024**3), 1)
-            disk_free_gb = round(free_bytes / (1024**3), 1)
-            if total_bytes > 0: disk_percent = round((used_bytes / total_bytes) * 100, 1)
-        except: pass
+            if total_bytes > 0:
+                disk_percent = round((used_bytes / total_bytes) * 100, 1)
+        except:
+            pass
         
-        # Database
         db_size_mb = 0
         try:
             if 'sqlite' in settings.DATABASES['default']['ENGINE']:
                 db_path = settings.DATABASES['default']['NAME']
-                if os.path.exists(db_path): db_size_mb = round(os.path.getsize(db_path) / (1024**2), 2)
-        except: pass
+                if os.path.exists(db_path):
+                    db_size_mb = round(os.path.getsize(db_path) / (1024**2), 2)
+        except:
+            pass
         
-        # Users & Sessions
-        active_sessions = Session.objects.filter(expire_date__gte=timezone.now()).count()
-        active_users = User.objects.filter(is_active=True).count()
-        
-        # Failed Logins
-        today = date.today()
-        failed_logins = 0
-        try:
-            from axes.models import AccessAttempt
-            failed_logins = AccessAttempt.objects.filter(attempt_time__date=today).count()
-        except: pass
-        
-        # Model Counts
         model_counts = {
-            'Products': Product.objects.count(), 'Customers': Customer.objects.count(),
-            'Vendors': Vendor.objects.count(), 'Sales': Sale.objects.count(),
-            'Purchases': Purchase.objects.count(), 'Sale Orders': SaleOrder.objects.count(),
-            'Purchase Orders': PurchaseOrder.objects.count(), 'Challans': DeliveryChallan.objects.count(),
-            'GRNs': GoodsReceivedNote.objects.count(), 'Inventory Items': Inventory.objects.count(),
+            'Products': Product.objects.count(),
+            'Customers': Customer.objects.count(),
+            'Vendors': Vendor.objects.count(),
+            'Sales': Sale.objects.count(),
+            'Purchases': Purchase.objects.count(),
+            'Sale Orders': SaleOrder.objects.count(),
+            'Purchase Orders': PurchaseOrder.objects.count(),
+            'Challans': DeliveryChallan.objects.count(),
+            'GRNs': GoodsReceivedNote.objects.count(),
+            'Inventory Items': Inventory.objects.count(),
             'Users': User.objects.count(),
         }
         total_records = sum(model_counts.values())
         
-        # Recent Activity
         yesterday = now() - timedelta(hours=24)
         recent_sales = Sale.objects.filter(sale_date__gte=yesterday).count()
         recent_purchases = Purchase.objects.filter(pur_date__gte=yesterday).count()
@@ -550,51 +1824,150 @@ class CustomAdminSite(admin.AdminSite):
         recent_pos = PurchaseOrder.objects.filter(order_date__gte=yesterday).count()
         recent_challans = DeliveryChallan.objects.filter(challan_date__gte=yesterday).count()
         recent_grns = GoodsReceivedNote.objects.filter(grn_date__gte=yesterday).count()
+        recent_logs = LogEntry.objects.select_related('user').order_by('-action_time')[:10]
         
-        # Today's Summary
-        today_sales_amount = Sale.objects.filter(sale_date__date=today).aggregate(t=Sum('saleitem__total_amt'))['t'] or Decimal('0.0')
-        today_purchase_amount = Purchase.objects.filter(pur_date__date=today).aggregate(t=Sum('purchaseitem__total_amt'))['t'] or Decimal('0.0')
-        today_collections = Sale.objects.filter(sale_date__date=today).aggregate(t=Sum('paid'))['t'] or Decimal('0.0')
-        today_payments = Purchase.objects.filter(pur_date__date=today).aggregate(t=Sum('paid'))['t'] or Decimal('0.0')
-        
-        # Pending Tasks
-        pending_orders = SaleOrder.objects.filter(status__in=['pending', 'confirmed', 'processing']).count()
-        pending_deliveries = SaleOrder.objects.filter(status='ready').count()
-        pending_pos = PurchaseOrder.objects.filter(status__in=['pending', 'confirmed']).count()
-        low_stock_items = Inventory.objects.filter(stock__lt=F('product__low_stock_threshold')).count()
-        
-        # Logs
-        recent_logs = LogEntry.objects.select_related('user').order_by('-action_time')[:15]
-        
-        # Backup
         last_backup = None
         try:
-            backup_files = self.get_backup_files()
-            if backup_files: last_backup = backup_files[0]
-        except: pass
+            backup_files = self.get_backup_files(request)
+            if backup_files:
+                last_backup = backup_files[0]
+        except:
+            pass
         
-        license_valid = License.objects.filter(expiry_date__gte=now().date(), is_active=True).exists()
+        license_valid = License.objects.filter(
+            expiry_date__gte=now().date(), is_active=True
+        ).exists()
+        
         import django, sys
-        
         context = {
-            **self.each_context(request), "title": "System Health",
-            "cpu_percent": cpu_percent, "cpu_count": cpu_count, "cpu_freq": cpu_freq,
-            "ram_total_gb": ram_total_gb, "ram_used_gb": ram_used_gb, "ram_free_gb": ram_free_gb, "ram_percent": ram_percent,
-            "disk_total_gb": disk_total_gb, "disk_used_gb": disk_used_gb, "disk_free_gb": disk_free_gb, "disk_percent": disk_percent,
-            "db_size_mb": db_size_mb, "total_records": total_records, "model_counts": model_counts,
-            "active_sessions": active_sessions, "active_users": active_users, "failed_logins": failed_logins,
-            "today_sales_amount": today_sales_amount, "today_purchase_amount": today_purchase_amount,
-            "today_collections": today_collections, "today_payments": today_payments,
-            "recent_sales": recent_sales, "recent_purchases": recent_purchases,
-            "recent_orders": recent_orders, "recent_pos": recent_pos,
-            "recent_challans": recent_challans, "recent_grns": recent_grns,
-            "pending_orders": pending_orders, "pending_deliveries": pending_deliveries,
-            "pending_pos": pending_pos, "low_stock_items": low_stock_items,
-            "recent_logs": recent_logs, "last_backup": last_backup, "license_valid": license_valid,
-            "django_version": django.get_version(), "python_version": sys.version.split()[0],
-            "uptime_str": "N/A (Termux)",
+            **self.each_context(request),
+            "title": "System Health",
+            "cpu_percent": cpu_percent,
+            "cpu_count": cpu_count,
+            "ram_total_gb": ram_total_gb,
+            "ram_used_gb": ram_used_gb,
+            "ram_percent": ram_percent,
+            "disk_total_gb": disk_total_gb,
+            "disk_used_gb": disk_used_gb,
+            "disk_percent": disk_percent,
+            "db_size_mb": db_size_mb,
+            "total_records": total_records,
+            "model_counts": model_counts,
+            "recent_sales": recent_sales,
+            "recent_purchases": recent_purchases,
+            "recent_orders": recent_orders,
+            "recent_pos": recent_pos,
+            "recent_challans": recent_challans,
+            "recent_grns": recent_grns,
+            "recent_logs": recent_logs,
+            "last_backup": last_backup,
+            "license_valid": license_valid,
+            "django_version": django.get_version(),
+            "python_version": sys.version.split()[0],
+            "uptime_str": "N/A",
         }
         return TemplateResponse(request, "admin/system_health.html", context)
+
+    # ============================================
+    # RANGE REPORTING VIEWS
+    # ============================================
+    def range_report_view(self, request):
+        """Range report page with date filters"""
+        from datetime import date, timedelta
+        
+        to_date = request.GET.get('to_date', date.today().strftime('%Y-%m-%d'))
+        from_date = request.GET.get('from_date', (date.today() - timedelta(days=30)).strftime('%Y-%m-%d'))
+        report_type = request.GET.get('report_type', 'sales')
+        
+        from_date_obj = datetime.strptime(from_date, '%Y-%m-%d').date()
+        to_date_obj = datetime.strptime(to_date, '%Y-%m-%d').date()
+        
+        context = {
+            **self.each_context(request),
+            "title": "📊 Range Reports",
+            "from_date": from_date,
+            "to_date": to_date,
+            "report_type": report_type,
+        }
+        
+        if report_type == 'sales':
+            data = ReportManager.get_sales_by_date_range(from_date_obj, to_date_obj)
+            context['sales_data'] = data
+            context['top_products'] = ReportManager.get_top_products_by_date_range(from_date_obj, to_date_obj)
+        elif report_type == 'purchases':
+            data = ReportManager.get_purchases_by_date_range(from_date_obj, to_date_obj)
+            context['purchase_data'] = data
+        elif report_type == 'daily':
+            context['daily_data'] = ReportManager.get_daily_summary(from_date_obj, to_date_obj)
+        
+        return TemplateResponse(request, "admin/range_report.html", context)
+
+    def range_report_pdf(self, request):
+        """Generate PDF for range report"""
+        from_date = request.GET.get('from_date')
+        to_date = request.GET.get('to_date')
+        report_type = request.GET.get('report_type', 'sales')
+        
+        from_date_obj = datetime.strptime(from_date, '%Y-%m-%d').date()
+        to_date_obj = datetime.strptime(to_date, '%Y-%m-%d').date()
+        
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        styles = getSampleStyleSheet()
+        story = []
+        
+        company = CompanyInfo.objects.first()
+        company_name = company.name if company else "YOUR COMPANY"
+        story.append(Paragraph(company_name, styles['Heading1']))
+        story.append(Paragraph(f"Report: {from_date} to {to_date}", styles['Heading2']))
+        
+        if report_type == 'sales':
+            data = ReportManager.get_sales_by_date_range(from_date_obj, to_date_obj)
+            story.append(Paragraph(f"Total Sales: {data['count']}"))
+            story.append(Paragraph(f"Total Amount: Rs. {data['total_amount']:,.2f}"))
+            story.append(Paragraph(f"Total Profit: Rs. {data['total_profit']:,.2f}"))
+        
+        doc.build(story)
+        buffer.seek(0)
+        return HttpResponse(buffer, content_type='application/pdf')
+
+    # ============================================
+    # WHATSAPP VIEWS
+    # ============================================
+    def whatsapp_view(self, request):
+        customers = Customer.objects.exclude(contact_number__isnull=True).exclude(contact_number='')
+        return TemplateResponse(request, "admin/whatsapp_send.html", {
+            **self.each_context(request), "title": "📱 WhatsApp Messages", "customers": customers,
+        })
+
+    def whatsapp_reminders_view(self, request):
+        from .whatsapp_utils import WhatsAppBulkSender
+        if request.method == 'POST':
+            customer_id = request.POST.get('customer_id')
+            if customer_id:
+                from .whatsapp_utils import WhatsAppSender
+                customer = Customer.objects.get(id=customer_id)
+                WhatsAppSender.send_direct_message(customer.contact_number, request.POST.get('message', 'Payment reminder'))
+                messages.success(request, "✅ Link generated!")
+        return TemplateResponse(request, "admin/whatsapp_reminders.html", {
+            **self.each_context(request), "title": "💰 Payment Reminders",
+            "customers": WhatsAppBulkSender.generate_reminder_links(),
+        })
+
+    def whatsapp_daily_summary_view(self, request):
+        from .whatsapp_utils import WhatsAppSender
+        if request.method == 'POST':
+            phone = request.POST.get('phone', '')
+            if phone:
+                result = WhatsAppSender.send_daily_summary(phone)
+                if result['success']:
+                    messages.success(request, "✅ Daily summary link generated!")
+                    return TemplateResponse(request, "admin/whatsapp_daily_summary.html", {
+                        **self.each_context(request), "title": "📊 Daily Summary", "result": result,
+                    })
+        return TemplateResponse(request, "admin/whatsapp_daily_summary.html", {
+            **self.each_context(request), "title": "📊 Daily Summary on WhatsApp",
+        })
 
 # Default Admin Site کو CustomAdminSite سے Replace کریں
 admin.site = CustomAdminSite()
@@ -616,9 +1989,12 @@ class SaleOrderItemInline(admin.TabularInline):
 # ============================================
 # SALE ORDER ADMIN
 # ============================================
+# ============================================
+# SALE ORDER ADMIN
+# ============================================
 @admin.register(SaleOrder, site=admin.site)
 class SaleOrderAdmin(admin.ModelAdmin):
-    list_display = ('order_no', 'order_date', 'customer', 'warehouse', 'status', 
+    list_display = ('order_no', 'order_date', 'customer','customer_po_number','warehouse', 'status', 
                     'formatted_total', 'formatted_advance', 'formatted_outstanding', 
                     'delivery_status_display', 'converted_to_sale')
     list_filter = ('status', 'order_date', 'warehouse', 'customer__group')
@@ -626,14 +2002,20 @@ class SaleOrderAdmin(admin.ModelAdmin):
     search_help_text = "Search by Order No, Customer Name, or Contact Number"
     inlines = [SaleOrderItemInline]
     change_list_template = "admin/button.html"
-    actions = ['convert_to_sale', 'create_delivery_challan', 'update_status', 
-               'generate_order_pdf', 'generate_order_html']
+    actions = [
+        'convert_to_sale', 
+        'create_delivery_challan', 
+        'update_status', 
+        'generate_order_pdf', 
+        'generate_order_html',
+        'send_order_status_whatsapp',
+    ]
     
     readonly_fields = ('order_no', 'created_at', 'updated_at', 'converted_to_sale', 'created_by')
     
     fieldsets = (
         ('Order Information', {
-            'fields': ('order_no', 'customer', 'warehouse', 'order_date', 'delivery_date', 'status')
+            'fields': ('order_no', 'customer','customer_po_number', 'warehouse', 'order_date', 'delivery_date', 'status')
         }),
         ('Payment Information', {
             'fields': ('discount_value', 'advance_payment')
@@ -666,7 +2048,6 @@ class SaleOrderAdmin(admin.ModelAdmin):
         if obj.status in ['pending', 'confirmed']:
             return "Not Started"
         elif obj.status == 'partially_delivered':
-            # Calculate percentage
             total_items = obj.items.count()
             if total_items > 0:
                 delivered_count = 0
@@ -692,6 +2073,9 @@ class SaleOrderAdmin(admin.ModelAdmin):
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
     
+    # ============================================
+    # CONVERT TO SALE
+    # ============================================
     def convert_to_sale(self, request, queryset):
         """Convert selected orders to Sale/Invoice"""
         from django.db import transaction
@@ -748,6 +2132,9 @@ class SaleOrderAdmin(admin.ModelAdmin):
     
     convert_to_sale.short_description = "🔄 Convert to Sale/Invoice"
     
+    # ============================================
+    # CREATE DELIVERY CHALLAN
+    # ============================================
     def create_delivery_challan(self, request, queryset):
         """Create Delivery Challan with Partial Delivery Support"""
         from django.db import transaction
@@ -766,7 +2153,6 @@ class SaleOrderAdmin(admin.ModelAdmin):
                     )
                     
                     for item in order.items.all():
-                        # Calculate already delivered qty
                         already_delivered = DeliveryChallanItem.objects.filter(
                             challan__order=order,
                             product=item.product
@@ -784,7 +2170,6 @@ class SaleOrderAdmin(admin.ModelAdmin):
                                 notes=f"Order: {order.order_no}"
                             )
                     
-                    # Update order delivery status
                     order.update_delivery_status()
                     count += 1
                     
@@ -796,6 +2181,9 @@ class SaleOrderAdmin(admin.ModelAdmin):
     
     create_delivery_challan.short_description = "📋 Create Delivery Challan"
     
+    # ============================================
+    # UPDATE STATUS
+    # ============================================
     def update_status(self, request, queryset):
         """Bulk update order status"""
         selected_ids = queryset.values_list('id', flat=True)
@@ -803,6 +2191,9 @@ class SaleOrderAdmin(admin.ModelAdmin):
         return redirect(f"/admin/app/saleorder/update-status/?ids={ids_str}")
     update_status.short_description = "📝 Update Status"
     
+    # ============================================
+    # GENERATE ORDER PDF
+    # ============================================
     def generate_order_pdf(self, request, queryset):
         """Generate PDF for selected orders"""
         buffer = io.BytesIO()
@@ -819,7 +2210,6 @@ class SaleOrderAdmin(admin.ModelAdmin):
             story.append(Paragraph(f"Status: {order.get_status_display()}", styles['Normal']))
             story.append(Spacer(1, 0.2*inch))
             
-            # Items table with delivery info
             data = [['Product', 'Order Qty', 'Delivered', 'Pending', 'Price', 'Total']]
             
             for item in order.items.all():
@@ -857,6 +2247,9 @@ class SaleOrderAdmin(admin.ModelAdmin):
         return response
     generate_order_pdf.short_description = "📄 Generate Order PDF"
     
+    # ============================================
+    # GENERATE ORDER HTML
+    # ============================================
     def generate_order_html(self, request, queryset):
         """Generate HTML report"""
         context = {'orders': queryset, 'date': datetime.now()}
@@ -865,6 +2258,44 @@ class SaleOrderAdmin(admin.ModelAdmin):
         response['Content-Disposition'] = 'attachment; filename="sale_orders.html"'
         return response
     generate_order_html.short_description = "🌐 Generate HTML Report"
+    
+    # ============================================
+    # WHATSAPP - SEND ORDER STATUS
+    # ============================================
+    def send_order_status_whatsapp(self, request, queryset):
+        """Orders ka status WhatsApp pe bhejo"""
+        from .whatsapp_utils import WhatsAppSender
+        
+        count = 0
+        links = []
+        for order in queryset:
+            if order.customer.contact_number:
+                result = WhatsAppSender.send_order_status(
+                    order.customer.contact_number,
+                    order.customer.name,
+                    order.order_no,
+                    order.status
+                )
+                if result.get('success'):
+                    count += 1
+                    links.append({
+                        'order': order.order_no,
+                        'customer': order.customer.name,
+                        'status': order.get_status_display(),
+                        'url': result['url']
+                    })
+        
+        if count > 0:
+            msg = f"✅ {count} order status links generated!<br><br>"
+            for link in links:
+                msg += f"📋 {link['order']} ({link['status']}) - {link['customer']}<br>"
+            if links:
+                msg += f"<br><a href='{links[0]['url']}' target='_blank' style='background:#25D366; color:white; padding:8px 15px; border-radius:5px; text-decoration:none;'>📱 Send First Update</a>"
+            self.message_user(request, format_html(msg))
+        else:
+            self.message_user(request, "❌ Selected orders ke customers ke paas phone number nahi hai!", level=messages.WARNING)
+    
+    send_order_status_whatsapp.short_description = "📱 Send Order Status on WhatsApp"
 
 class PurchaseRetrnItemInline(admin.TabularInline):
     model = PurchaseRetrnItem
@@ -879,7 +2310,7 @@ class SaleRetrnItemInline(admin.TabularInline):
 class PurchaseItemInline(admin.TabularInline):
     model = PurchaseItem
     fields = ('product', 'qty', 'price', 'total')
-    extra = 10
+    extra = 1
     readonly_fields = ('total',)
 
     def total(self, obj):
@@ -890,7 +2321,8 @@ class PurchaseItemInline(admin.TabularInline):
 class SaleItemInline(admin.TabularInline):
     model = SaleItem
     fields = ('product', 'qty', 'price')
-    extra = 10
+    extra = 1
+    autocomplete_fields =['product']
 
 # ============================================
 # DELIVERY CHALLAN ITEM INLINE
@@ -1200,11 +2632,12 @@ class WarehouseTransferAdmin(admin.ModelAdmin):
 
 from django.urls import reverse
 from django.utils.html import format_html
-#from .barcode_utils import generate_barcode_image, generate_barcode_label, generate_multiple_labels
+from .barcode_utils import generate_barcode_image, generate_barcode_label, generate_multiple_labels
 from django.http import HttpResponse
 import io
 
 @admin.register(Product, site=admin.site)
+
 class ProductAdmin(ImportExportModelAdmin, admin.ModelAdmin):
     search_fields = ('serial_no', 'name', 'barcode')
     search_help_text = "Search by Serial No, Product Name, Barcode"
@@ -1388,6 +2821,26 @@ class ProductAdmin(ImportExportModelAdmin, admin.ModelAdmin):
     print_single_labels.short_description = "🏷️ Print Single Labels (One per page)"
 
 
+# Product Alias Admin
+@admin.register(ProductAlias, site=admin.site)
+class ProductAliasAdmin(admin.ModelAdmin):
+    list_display = ('alias', 'product', 'created_by', 'created_at')
+    list_filter = ('created_by',)
+    search_fields = ('alias', 'product__name')
+    autocomplete_fields = ['product', 'created_by']
+    readonly_fields = ('created_at',)
+    
+    fieldsets = (
+        ('Alias Information', {
+            'fields': ('product', 'alias', 'created_by')
+        }),
+    )
+    
+    def save_model(self, request, obj, form, change):
+        if not obj.created_by:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
 # ============================================
 # VENDOR GROUP ADMIN
 # ============================================
@@ -1460,16 +2913,30 @@ class VendorGroupAdmin(admin.ModelAdmin):
 # ============================================
 @admin.register(Vendor, site=admin.site)
 class VendorAdmin(admin.ModelAdmin):
-    search_fields = ('name',)
-    search_help_text = "Search by Vendor Name"
-    list_display = ('name','group', 'contact_number', 'address', 'formatted_outstanding_balance')
-    ordering = ('name',)
+    search_fields = ('vendor_code', 'name')
+    search_help_text = "Search by Vendor Code or Vendor Name"
+    list_display = ('vendor_code', 'name', 'group', 'contact_number', 'address', 
+                    'opening_balance', 'formatted_outstanding_balance')
+    ordering = ('vendor_code',)
     change_list_template = "admin/button.html"
     actions = ['generate_html_report', 'generate_vendor_pdf']
+    
+    fieldsets = (
+        ('Vendor Information', {
+            'fields': ('vendor_code', 'name', 'group', 'address')
+        }),
+        ('Contact Details', {
+            'fields': ('contact_number',)
+        }),
+        ('Financial Information', {
+            'fields': ('opening_balance',),
+            'description': '⚠️ Opening Balance: Previous outstanding amount before using this system (before software start)'
+        }),
+    )
 
     def formatted_outstanding_balance(self, obj):
         return f"{obj.outstanding_balance():,.2f} PKR"
-    formatted_outstanding_balance.short_description = "Outstanding Balance"
+    formatted_outstanding_balance.short_description = "Total Outstanding"
 
     def generate_html_report(self, request, queryset):
         vendors = queryset
@@ -1490,35 +2957,43 @@ class VendorAdmin(admin.ModelAdmin):
         company = CompanyInfo.objects.first()
         company_name = company.name if company else "Company Name"
         
-        title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18, alignment=TA_CENTER, spaceAfter=10)
+        title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18, 
+                                      alignment=TA_CENTER, spaceAfter=10)
         story.append(Paragraph(company_name, title_style))
         story.append(Paragraph("Vendor Report", title_style))
         story.append(Paragraph(f"Date: {datetime.now().strftime('%d-%m-%Y')}", styles['Normal']))
         story.append(Spacer(1, 0.3*inch))
         
-        table_data = [['Name', 'Group', 'Contact', 'Address', 'Outstanding Balance']]
+        # Updated table header with Vendor Code + Opening Balance
+        table_data = [['Code', 'Name', 'Group', 'Contact', 'Opening Balance', 'Outstanding']]
         
+        total_opening = Decimal('0.0')
         total_outstanding = Decimal('0.0')
+        
         for vendor in queryset:
+            opening = vendor.opening_balance
             balance = vendor.outstanding_balance()
             table_data.append([
+                vendor.vendor_code or '-',
                 vendor.name,
                 vendor.group.name if vendor.group else '-',
                 vendor.contact_number or '-',
-                (vendor.address[:30] + '...') if vendor.address and len(vendor.address) > 30 else (vendor.address or '-'),
+                f"{opening:,.2f}",
                 f"{balance:,.2f}"
             ])
+            total_opening += opening
             total_outstanding += balance
         
-        table_data.append(['', '', '', 'TOTAL:', f"{total_outstanding:,.2f}"])
+        table_data.append(['', '', '', '', 'TOTAL:', f"{total_outstanding:,.2f}"])
         
-        table = Table(table_data, repeatRows=1, colWidths=[1.5*inch, 1.2*inch, 1.2*inch, 2*inch, 1.2*inch])
+        table = Table(table_data, repeatRows=1, 
+                      colWidths=[0.8*inch, 1.3*inch, 1*inch, 1*inch, 1*inch, 1.1*inch])
         table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (4, 1), (4, -1), 'RIGHT'),
+            ('ALIGN', (4, 1), (5, -1), 'RIGHT'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 9),
+            ('FONTSIZE', (0, 0), (-1, 0), 8),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('BACKGROUND', (0, -1), (-1, -1), colors.lightgrey),
             ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
@@ -1549,7 +3024,7 @@ class PurchaseOrderItemInline(admin.TabularInline):
 # ============================================
 @admin.register(PurchaseOrder, site=admin.site)
 class PurchaseOrderAdmin(admin.ModelAdmin):
-    list_display = ('order_no', 'order_date', 'vendor', 'warehouse', 'status',
+    list_display = ('order_no', 'order_date', 'vendor','vendor_so_number', 'warehouse', 'status',
                     'formatted_total', 'formatted_advance', 'formatted_outstanding',
                     'receive_status_display', 'converted_to_purchase')
     list_filter = ('status', 'order_date', 'warehouse', 'vendor__group')
@@ -1563,7 +3038,7 @@ class PurchaseOrderAdmin(admin.ModelAdmin):
     
     fieldsets = (
         ('Order Information', {
-            'fields': ('order_no', 'vendor', 'warehouse', 'order_date', 'expected_date', 'status')
+            'fields': ('order_no', 'vendor','vendor_so_number', 'warehouse', 'order_date', 'expected_date', 'status')
         }),
         ('Payment Information', {
             'fields': ('discount_value', 'advance_payment')
@@ -1893,8 +3368,6 @@ class PurchaseAdmin(admin.ModelAdmin):
     list_filter = ['pur_date','vendor__group','warehouse',]
     inlines = [PurchaseItemInline]
     list_per_page = 50
-    change_form_template = "admin/purchase_barcode.html"  # ✅ ADD THIS LINE
-    # ... rest same ...
     change_list_template = "admin/button.html"
     actions = ['generate_html_report', 'generate_vendor_ledger', 'generate_aging_report', 'generate_purchase_pdf']
 
@@ -2221,14 +3694,26 @@ class CustomerGroupAdmin(admin.ModelAdmin):
 # CUSTOMER ADMIN
 # ============================================
 class CustomerAdmin(admin.ModelAdmin):
-    search_fields = ('name',)
-    search_help_text = "Search by Customer Name"
-    list_display = ('name', 'group', 'address', 'adjusted_outstanding_balance', 'profit_margin')
+    search_fields = ('customer_code', 'name', 'contact_number')
+    search_help_text = "Search by Customer Code, Name, or Contact Number"
+    list_display = ('customer_code', 'name', 'group', 'contact_number', 'address', 
+                    'adjusted_outstanding_balance', 'profit_margin')
     list_editable = ('profit_margin',)
-    ordering = ('name',)
+    ordering = ('customer_code',)
     change_list_template = "admin/button.html"
     actions = ['generate_html_report', 'generate_customer_pdf']
     readonly_fields = ('adjusted_outstanding_balance',)
+    
+    fieldsets = (
+        ('Customer Information', {
+            'fields': ('customer_code', 'name', 'group', 'address', 'profit_margin')
+        }),
+        ('Contact Details', {
+            'fields': ('contact_number', 
+                       ('ref_name_1', 'ref_contact_number_1'),
+                       ('ref_name_2', 'ref_contact_number_2'))
+        }),
+    )
 
     def adjusted_outstanding_balance(self, obj):
         return f'{obj.adjusted_outstanding_balance():,.2f}'
@@ -2253,35 +3738,41 @@ class CustomerAdmin(admin.ModelAdmin):
         company = CompanyInfo.objects.first()
         company_name = company.name if company else "Company Name"
         
-        title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18, alignment=TA_CENTER, spaceAfter=10)
+        title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18, 
+                                      alignment=TA_CENTER, spaceAfter=10)
         story.append(Paragraph(company_name, title_style))
         story.append(Paragraph("Customer Report", title_style))
         story.append(Paragraph(f"Date: {datetime.now().strftime('%d-%m-%Y')}", styles['Normal']))
         story.append(Spacer(1, 0.3*inch))
         
-        table_data = [['Name', 'Group', 'Address', 'Profit Margin %', 'Outstanding Balance']]
+        # Updated table header with Customer Code
+        table_data = [['Code', 'Name', 'Group', 'Address', 'Contact', 'Margin %', 'Outstanding']]
         
         total_outstanding = Decimal('0.0')
         for customer in queryset:
             balance = customer.adjusted_outstanding_balance()
             table_data.append([
+                customer.customer_code or '-',
                 customer.name,
                 customer.group.name if customer.group else '-',
-                (customer.address[:30] + '...') if customer.address and len(customer.address) > 30 else (customer.address or '-'),
+                (customer.address[:30] + '...') if customer.address and len(customer.address) > 30 
+                    else (customer.address or '-'),
+                customer.contact_number or '-',
                 f"{customer.profit_margin:.2f}%",
                 f"{balance:,.2f}"
             ])
             total_outstanding += balance
         
-        table_data.append(['', '', '', 'TOTAL:', f"{total_outstanding:,.2f}"])
+        table_data.append(['', '', '', '', '', 'TOTAL:', f"{total_outstanding:,.2f}"])
         
-        table = Table(table_data, repeatRows=1, colWidths=[1.5*inch, 1.2*inch, 2*inch, 1.2*inch, 1.3*inch])
+        table = Table(table_data, repeatRows=1, 
+                      colWidths=[0.8*inch, 1.3*inch, 1*inch, 1.5*inch, 1*inch, 0.8*inch, 1*inch])
         table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (3, 1), (4, -1), 'RIGHT'),
+            ('ALIGN', (5, 1), (6, -1), 'RIGHT'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 9),
+            ('FONTSIZE', (0, 0), (-1, 0), 8),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('BACKGROUND', (0, -1), (-1, -1), colors.lightgrey),
             ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
@@ -2457,6 +3948,9 @@ class SaleItemAdmin(admin.ModelAdmin):
 
 # ============================================
 # SALE ADMIN
+
+# ============================================
+# SALE ADMIN
 # ============================================
 class SaleAdmin(admin.ModelAdmin):
     list_display = ('sale_date','customer', 'warehouse', 'get_customer_group','bill_no','created_by',
@@ -2469,7 +3963,15 @@ class SaleAdmin(admin.ModelAdmin):
     change_form_template = "admin/barcode_sale.html"
     change_list_template = "admin/button.html"
     inlines = [SaleItemInline]
-    actions = ['generate_html_report', 'generate_customer_ledger', 'generate_sales_profit_analysis', 'generate_sale_pdf']
+    actions = [
+        'generate_html_report', 
+        'generate_customer_ledger', 
+        'generate_sales_profit_analysis', 
+        'generate_sale_pdf',
+        'send_whatsapp_invoice',
+        'send_pdf_invoice_whatsapp',
+        'send_payment_reminders',
+    ]
     list_per_page = 50
 
     def get_form(self, request, obj=None, **kwargs):
@@ -2628,6 +4130,95 @@ class SaleAdmin(admin.ModelAdmin):
         return response
     generate_sale_pdf.short_description = 'Generate PDF Report'
 
+    # ============================================
+    # WHATSAPP - TEXT INVOICE
+    # ============================================
+    def send_whatsapp_invoice(self, request, queryset):
+        """Selected sales ka TEXT invoice WhatsApp pe bhejo"""
+        from .whatsapp_utils import WhatsAppSender
+        
+        count = 0
+        links = []
+        for sale in queryset:
+            if sale.customer.contact_number:
+                result = WhatsAppSender.send_invoice(
+                    sale.customer.contact_number,
+                    sale.bill_no,
+                    sale.total_amount()
+                )
+                if result.get('success'):
+                    count += 1
+                    links.append({
+                        'bill': sale.bill_no,
+                        'customer': sale.customer.name,
+                        'url': result['url']
+                    })
+        
+        if count > 0:
+            msg = f"✅ {count} WhatsApp links generated!<br><br>"
+            for link in links[:5]:
+                msg += f"📋 {link['bill']} - {link['customer']}<br>"
+            if len(links) > 5:
+                msg += f"... and {len(links)-5} more<br>"
+            if links:
+                msg += f"<br><a href='{links[0]['url']}' target='_blank' style='background:#25D366; color:white; padding:8px 15px; border-radius:5px; text-decoration:none;'>📱 Send First Invoice</a>"
+            
+            self.message_user(request, format_html(msg))
+        else:
+            self.message_user(request, "❌ Selected customers don't have phone numbers!", level=messages.WARNING)
+
+    send_whatsapp_invoice.short_description = "📱 Send TEXT Invoice on WhatsApp"
+
+    # ============================================
+    # WHATSAPP - PDF INVOICE
+    # ============================================
+    def send_pdf_invoice_whatsapp(self, request, queryset):
+        """Selected sales ka PDF invoice WhatsApp pe bhejo"""
+        from .whatsapp_utils import WhatsAppSender
+        
+        count = 0
+        links = []
+        for sale in queryset:
+            if sale.customer.contact_number:
+                result = WhatsAppSender.send_pdf_invoice_link(sale)
+                if result.get('success'):
+                    count += 1
+                    links.append({
+                        'bill': sale.bill_no,
+                        'customer': sale.customer.name,
+                        'url': result['url'],
+                        'filepath': result.get('filepath', '')
+                    })
+        
+        if count > 0:
+            msg = f"✅ {count} PDF invoices generated!<br><br>"
+            for link in links[:5]:
+                msg += f"📋 {link['bill']} - {link['customer']}<br>"
+            if links:
+                msg += f"<br><a href='{links[0]['url']}' target='_blank' style='background:#25D366; color:white; padding:8px 15px; border-radius:5px; text-decoration:none;'>📱 Send First PDF Invoice</a>"
+            self.message_user(request, format_html(msg))
+        else:
+            self.message_user(request, "❌ Selected customers don't have phone numbers!", level=messages.WARNING)
+
+    send_pdf_invoice_whatsapp.short_description = "📄 Send PDF Invoice on WhatsApp"
+
+    # ============================================
+    # WHATSAPP - PAYMENT REMINDERS
+    # ============================================
+    def send_payment_reminders(self, request, queryset):
+        """Outstanding customers ko reminder bhejo"""
+        from .whatsapp_utils import WhatsAppBulkSender
+        
+        links = WhatsAppBulkSender.generate_reminder_links()
+        
+        if links:
+            msg = f"✅ {len(links)} payment reminder links generated!<br><br>"
+            msg += f"<a href='/admin/whatsapp/reminders/' style='background:#25D366; color:white; padding:8px 15px; border-radius:5px; text-decoration:none;'>📱 View All Reminders & Send</a>"
+            self.message_user(request, format_html(msg))
+        else:
+            self.message_user(request, "🎉 All payments clear! No reminders needed.")
+
+    send_payment_reminders.short_description = "💰 Send Payment Reminders"
 
 # ============================================
 # INVENTORY ADMIN
@@ -2783,8 +4374,15 @@ class InventoryAdmin(admin.ModelAdmin):
 # ============================================
 # STOCK BATCH ADMIN
 # ============================================
+# ============================================
+# STOCK BATCH ADMIN
+# ============================================
 class StockBatchAdmin(admin.ModelAdmin):
-    list_display = ('product', 'warehouse', 'qty', 'price', 'remaining_qty', 'batch_value_display','get_purchase_bill_no','get_sale_bill_no')
+    list_display = ('product', 'warehouse', 'qty', 'price', 'selling_price', 
+                    'profit_display', 'profit_percent_display', 'remaining_qty', 
+                    'batch_value_display', 'selling_value_display',
+                    'get_purchase_bill_no', 'get_sale_bill_no')
+    list_editable = ('selling_price',)
     search_fields = (
         'product__name', 'purchase_item__purchase__bill_no', 
         'sale_items__sale__bill_no', 'warehouse__name',
@@ -2792,13 +4390,54 @@ class StockBatchAdmin(admin.ModelAdmin):
     search_help_text = "Search by Product Name, Warehouse, Purchase Bill No, or Sale Bill No"
     list_filter = ('warehouse',)
     change_list_template = "admin/button.html"
+    
+    fields = ('product', 'warehouse', 'qty', 'price', 'selling_price', 'remaining_qty', 'purchase_item')
+    readonly_fields = ('product', 'warehouse', 'qty', 'price', 'remaining_qty', 'purchase_item')
 
     def has_add_permission(self, request):
         return False
 
+    # ============================================
+    # DISPLAY FIELDS
+    # ============================================
     def batch_value_display(self, obj):
-        return f"{Decimal(obj.remaining_qty) * obj.price:,.2f} PKR"
-    batch_value_display.short_description = 'Batch Value (PKR)'
+        """Purchase price pe total value"""
+        return f"Rs. {Decimal(obj.remaining_qty) * obj.price:,.2f}"
+    batch_value_display.short_description = '📦 Stock Value'
+
+    def selling_value_display(self, obj):
+        """Selling price pe total value"""
+        val = obj.selling_value()
+        if obj.selling_price > 0:
+            return f"Rs. {val:,.2f}"
+        return "-"
+    selling_value_display.short_description = '💰 Selling Value'
+
+    def profit_display(self, obj):
+        """Profit per unit with color"""
+        profit = obj.profit_per_unit()
+        if profit > 0:
+            return format_html(
+                '<span style="color:#28a745;font-weight:bold;">+Rs. {}</span>', 
+                round(profit, 2)
+            )
+        elif obj.selling_price > 0 and profit == 0:
+            return format_html('<span style="color:#ff9800;">Rs. 0 (No Profit)</span>')
+        return "-"
+    profit_display.short_description = '💰 Profit/Unit'
+    
+    def profit_percent_display(self, obj):
+        """Profit margin percentage"""
+        percent = obj.profit_margin_percent()
+        if percent > 0:
+            return format_html(
+                '<span style="color:#28a745;font-weight:bold;">{}% ↑</span>', 
+                round(percent, 1)
+            )
+        elif obj.selling_price > 0 and percent == 0:
+            return format_html('<span style="color:#ff9800;">0%</span>')
+        return "-"
+    profit_percent_display.short_description = '📈 Margin %'
 
     def get_purchase_bill_no(self, obj):
         if obj.purchase_item and obj.purchase_item.purchase:
@@ -2816,7 +4455,6 @@ class StockBatchAdmin(admin.ModelAdmin):
         )
         return ", ".join(bill_nos) if bill_nos else "N/A"
     get_sale_bill_no.short_description = "Sale Bill No"
-
 
 # ============================================
 # MONTHLY CLOSING ADMIN
@@ -3126,12 +4764,7 @@ class LicenseAdmin(admin.ModelAdmin):
 
 # ============================================
 # EXPENSE, SAVING, DEBT ADMIN
-# ============================================
-@admin.register(Expense, site=admin.site)
-class ExpenseAdmin(admin.ModelAdmin):
-    list_display = ('description', 'amount', 'date', 'category')
-    list_filter = ('category', 'date')
-    search_fields = ('description',)
+
 
 
 @admin.register(Saving, site=admin.site)
@@ -3221,8 +4854,19 @@ class CompanyInfoAdmin(admin.ModelAdmin):
     readonly_fields = ['updated_at']
 
     def has_add_permission(self, request):
+        # Sirf tab add karo jab koi record na ho
         if CompanyInfo.objects.exists():
             return False
+        return True
+
+    def has_delete_permission(self, request, obj=None):
+        # Delete bilkul allow na karo
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return True
+    
+    def has_view_permission(self, request, obj=None):
         return True
         
 
@@ -3466,6 +5110,317 @@ class StockAuditAdmin(admin.ModelAdmin):
 
 
 # ============================================
+# SALE QUOTATION ITEM INLINE
+# ============================================
+class SaleQuotationItemInline(admin.TabularInline):
+    model = SaleQuotationItem
+    fields = ('product', 'qty', 'price', 'total_amt')
+    readonly_fields = ('total_amt',)
+    extra = 10
+
+
+# ============================================
+# SALE QUOTATION ADMIN
+# ============================================
+@admin.register(SaleQuotation, site=admin.site)
+class SaleQuotationAdmin(admin.ModelAdmin):
+    list_display = ('quotation_no', 'quotation_date', 'customer', 'customer_po_number',
+                    'valid_until', 'status', 'formatted_total', 'converted_to_order')
+    list_filter = ('status', 'quotation_date', 'customer__group')
+    search_fields = ('quotation_no', 'customer__name')
+    inlines = [SaleQuotationItemInline]
+    change_list_template = "admin/button.html"
+    actions = ['convert_to_sale_order', 'generate_quotation_pdf']
+    
+    readonly_fields = ('quotation_no', 'created_at', 'updated_at', 'converted_to_order', 'created_by')
+    
+    fieldsets = (
+        ('Quotation Information', {
+            'fields': ('quotation_no', 'customer', 'customer_po_number', 'warehouse', 
+                       'quotation_date', 'valid_until', 'status')
+        }),
+        ('Payment & Terms', {
+            'fields': ('discount_value', 'terms_conditions')
+        }),
+        ('Additional', {
+            'fields': ('notes', 'converted_to_order', 'created_at')
+        }),
+    )
+    
+    def formatted_total(self, obj):
+        return f"Rs. {obj.total_amount():,.2f}"
+    formatted_total.short_description = "Total"
+    
+    def save_model(self, request, obj, form, change):
+        if not obj.created_by:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+    
+    def convert_to_sale_order(self, request, queryset):
+        """Convert accepted quotations to Sale Order"""
+        count = 0
+        for quote in queryset.filter(status__in=['accepted'], converted_to_order__isnull=True):
+            try:
+                with transaction.atomic():
+                    order = SaleOrder.objects.create(
+                        customer=quote.customer,
+                        warehouse=quote.warehouse,
+                        status='confirmed',
+                        discount_value=quote.discount_value,
+                        customer_po_number=quote.customer_po_number,
+                        notes=f"Converted from {quote.quotation_no}",
+                        created_by=request.user
+                    )
+                    for item in quote.items.all():
+                        SaleOrderItem.objects.create(
+                            order=order,
+                            product=item.product,
+                            qty=item.qty,
+                            price=item.price
+                        )
+                    quote.status = 'converted'
+                    quote.converted_to_order = order
+                    quote.save()
+                    count += 1
+            except Exception as e:
+                self.message_user(request, f"Error: {e}", level=messages.ERROR)
+        
+        if count:
+            self.message_user(request, f"✅ {count} quotations converted to Sale Orders!")
+    convert_to_sale_order.short_description = "🔄 Convert to Sale Order"
+    
+    def generate_quotation_pdf(self, request, queryset):
+        """Generate PDF for quotations"""
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        styles = getSampleStyleSheet()
+        story = []
+        
+        company = CompanyInfo.objects.first()
+        company_name = company.name if company else "Company Name"
+        
+        for quote in queryset:
+            story.append(Paragraph(f"QUOTATION - {quote.quotation_no}", styles['Heading1']))
+            story.append(Paragraph(f"Customer: {quote.customer.name}", styles['Normal']))
+            story.append(Paragraph(f"Valid Until: {quote.valid_until}", styles['Normal']))
+            story.append(Spacer(1, 0.2*inch))
+            
+            data = [['Product', 'Qty', 'Price', 'Total']]
+            for item in quote.items.all():
+                data.append([item.product.name, str(item.qty), f"{item.price:,.2f}", f"{item.total_amt:,.2f}"])
+            
+            data.append(['', '', 'Total:', f"{quote.total_amount():,.2f}"])
+            
+            table = Table(data)
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+            ]))
+            story.append(table)
+            story.append(Spacer(1, 0.5*inch))
+        
+        doc.build(story)
+        buffer.seek(0)
+        return HttpResponse(buffer, content_type='application/pdf')
+    generate_quotation_pdf.short_description = "📄 Generate Quotation PDF"
+    
+# ============================================
+# PURCHASE QUOTATION ITEM INLINE
+# ============================================
+class PurchaseQuotationItemInline(admin.TabularInline):
+    model = PurchaseQuotationItem
+    fields = ('product', 'qty', 'price', 'total_amt')
+    readonly_fields = ('total_amt',)
+    extra = 10
+
+
+# ============================================
+# PURCHASE QUOTATION ADMIN
+# ============================================
+@admin.register(PurchaseQuotation, site=admin.site)
+class PurchaseQuotationAdmin(admin.ModelAdmin):
+    list_display = ('quotation_no', 'quotation_date', 'vendor', 'vendor_so_number',
+                    'valid_until', 'status', 'formatted_total', 'converted_to_order')
+    list_filter = ('status', 'quotation_date', 'vendor__group')
+    search_fields = ('quotation_no', 'vendor__name')
+    inlines = [PurchaseQuotationItemInline]
+    change_list_template = "admin/button.html"
+    actions = ['convert_to_purchase_order', 'generate_rfq_pdf']
+    
+    readonly_fields = ('quotation_no', 'created_at', 'updated_at', 'converted_to_order', 'created_by')
+    
+    fieldsets = (
+        ('Quotation Information', {
+            'fields': ('quotation_no', 'vendor', 'vendor_so_number', 'warehouse',
+                       'quotation_date', 'valid_until', 'status')
+        }),
+        ('Vendor Details', {
+            'fields': ('vendor_reference',)
+        }),
+        ('Payment & Terms', {
+            'fields': ('discount_value', 'terms_conditions')
+        }),
+        ('Additional', {
+            'fields': ('notes', 'converted_to_order', 'created_at')
+        }),
+    )
+    
+    def formatted_total(self, obj):
+        return f"Rs. {obj.total_amount():,.2f}"
+    formatted_total.short_description = "Total"
+    
+    def save_model(self, request, obj, form, change):
+        if not obj.created_by:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+    
+    def convert_to_purchase_order(self, request, queryset):
+        """Convert accepted quotations to Purchase Order"""
+        count = 0
+        for quote in queryset.filter(status__in=['accepted'], converted_to_order__isnull=True):
+            try:
+                with transaction.atomic():
+                    order = PurchaseOrder.objects.create(
+                        vendor=quote.vendor,
+                        warehouse=quote.warehouse,
+                        status='confirmed',
+                        discount_value=quote.discount_value,
+                        vendor_so_number=quote.vendor_so_number,
+                        notes=f"Converted from {quote.quotation_no}",
+                        created_by=request.user
+                    )
+                    for item in quote.items.all():
+                        PurchaseOrderItem.objects.create(
+                            order=order,
+                            product=item.product,
+                            qty=item.qty,
+                            price=item.price
+                        )
+                    quote.status = 'converted'
+                    quote.converted_to_order = order
+                    quote.save()
+                    count += 1
+            except Exception as e:
+                self.message_user(request, f"Error: {e}", level=messages.ERROR)
+        
+        if count:
+            self.message_user(request, f"✅ {count} RFQs converted to Purchase Orders!")
+    convert_to_purchase_order.short_description = "🔄 Convert to Purchase Order"
+    
+    def generate_rfq_pdf(self, request, queryset):
+        """Generate PDF for RFQs"""
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        styles = getSampleStyleSheet()
+        story = []
+        
+        company = CompanyInfo.objects.first()
+        company_name = company.name if company else "Company Name"
+        
+        for quote in queryset:
+            story.append(Paragraph(f"REQUEST FOR QUOTATION - {quote.quotation_no}", styles['Heading1']))
+            story.append(Paragraph(f"Vendor: {quote.vendor.name}", styles['Normal']))
+            story.append(Paragraph(f"Valid Until: {quote.valid_until}", styles['Normal']))
+            story.append(Spacer(1, 0.2*inch))
+            
+            data = [['Product', 'Qty', 'Price', 'Total']]
+            for item in quote.items.all():
+                data.append([item.product.name, str(item.qty), f"{item.price:,.2f}", f"{item.total_amt:,.2f}"])
+            
+            data.append(['', '', 'Total:', f"{quote.total_amount():,.2f}"])
+            
+            table = Table(data)
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+            ]))
+            story.append(table)
+            story.append(Spacer(1, 0.5*inch))
+        
+        doc.build(story)
+        buffer.seek(0)
+        return HttpResponse(buffer, content_type='application/pdf')
+    generate_rfq_pdf.short_description = "📄 Generate RFQ PDF"
+    
+# admin.py mein yeh exact code copy karo
+
+@admin.register(SalesTarget)
+class SalesTargetAdmin(admin.ModelAdmin):
+    list_display = ('id', 'target_type', 'target_amount', 'start_date', 'end_date', 
+                    'current_progress_display', 'achieved_display', 'is_active', 'status_badge')
+    list_filter = ('target_type', 'is_active', 'start_date')
+    search_fields = ('salesman__username', 'product__name')
+    list_editable = ('is_active',)  # ✅ Ab yeh sahi hai kyunke is_active list_display mein hai
+    
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('target_type', 'target_amount', 'start_date', 'end_date')
+        }),
+        ('Target Specific', {
+            'fields': ('salesman', 'product'),
+            'classes': ('collapse',)
+        }),
+        ('Bonus Settings', {
+            'fields': ('bonus_percentage', 'bonus_amount'),
+            'description': 'Set bonus percentage or fixed amount for achieving target'
+        }),
+        ('Status', {
+            'fields': ('is_active', 'created_by')
+        }),
+    )
+    
+    def current_progress_display(self, obj):
+        progress = obj.current_progress()
+        if progress >= 100:
+            return format_html('<span style="color: #28a745; font-weight: bold;">✅ {}%</span>', round(progress, 1))
+        elif progress >= 80:
+            return format_html('<span style="color: #ff9800; font-weight: bold;">🟡 {}%</span>', round(progress, 1))
+        else:
+            return format_html('<span style="color: #dc3545; font-weight: bold;">🔴 {}%</span>', round(progress, 1))
+    current_progress_display.short_description = 'Progress'
+    
+    def achieved_display(self, obj):
+        achieved = obj.achieved_amount()
+        target = obj.target_amount
+        return format_html('<strong>Rs. {:,}</strong> / Rs. {:,}', achieved, target)
+    achieved_display.short_description = 'Achieved / Target'
+    
+    def status_badge(self, obj):
+        if obj.is_active:
+            return format_html('<span style="background: #28a745; color: white; padding: 2px 8px; border-radius: 12px;">Active</span>')
+        return format_html('<span style="background: #6c757d; color: white; padding: 2px 8px; border-radius: 12px;">Inactive</span>')
+    status_badge.short_description = 'Status'
+    
+    def save_model(self, request, obj, form, change):
+        if not obj.created_by:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+    
+    actions = ['send_target_report']
+    
+    def send_target_report(self, request, queryset):
+        """Send target report via WhatsApp"""
+        from .whatsapp_utils import WhatsAppSender
+        
+        count = 0
+        for target in queryset:
+            if target.salesman and hasattr(target.salesman, 'profile') and target.salesman.profile.phone:
+                message = f"🎯 *TARGET REPORT*\n\n"
+                message += f"Target: Rs. {target.target_amount:,.0f}\n"
+                message += f"Achieved: Rs. {target.achieved_amount():,.0f}\n"
+                message += f"Progress: {target.current_progress():.0f}%\n"
+                message += f"Days Left: {target.days_remaining()}\n"
+                message += f"Daily Needed: Rs. {target.daily_needed():,.0f}"
+                
+                # WhatsAppSender.send_message(target.salesman.profile.phone, message)
+                count += 1
+        
+        self.message_user(request, f"Report sent to {count} salesmen")
+    send_target_report.short_description = "📱 Send Target Report via WhatsApp"
+
+# ============================================
 # REGISTER ALL MODELS
 # ============================================
 admin.site.register(CompanyInfo, CompanyInfoAdmin)
@@ -3491,4 +5446,976 @@ admin.site.register(License, LicenseAdmin)
 admin.site.register(User, UserAdmin)
 admin.site.register(Group, GroupAdmin)
 admin.site.register(TrainingStep, TrainingStepAdmin)
+
+admin.site.register(InstallmentPlan, InstallmentPlanAdmin)
+
+admin.site.register(SaleInstallment, SaleInstallmentAdmin)
+
 admin.site.register(TrainingTopic, TrainingTopicAdmin)
+
+admin.site.register(EmiPayment, EmiPaymentAdmin)
+
+
+# ============================================
+# RANGE REPORT ADMIN
+# ============================================
+
+class SaleRangeReportAdmin(admin.ModelAdmin):
+    list_display = ('name', 'from_date', 'to_date', 'report_type', 'generated_at')
+    list_filter = ('report_type',)
+    search_fields = ('name',)
+    readonly_fields = ('generated_at', 'generated_by')
+    
+    def save_model(self, request, obj, form, change):
+        if not obj.generated_by:
+            obj.generated_by = request.user
+        super().save_model(request, obj, form, change)
+
+admin.site.register(SaleRangeReport, SaleRangeReportAdmin)
+
+@admin.register(Share, site=admin.site)
+class ShareAdmin(admin.ModelAdmin):
+    list_display = ('id', 'shareholder', 'share_type', 'quantity', 'purchase_price', 
+                    'certificate_number', 'certificate_printed', 'issue_date')
+    list_filter = ('share_type', 'is_locked', 'certificate_printed', 'issue_date')
+    search_fields = ('shareholder__name', 'shareholder__shareholder_code', 'certificate_number')
+    readonly_fields = ('created_at', 'updated_at', 'certificate_printed_at', 'certificate_printed_by')
+    
+    fieldsets = (
+        ('Share Information', {
+            'fields': ('shareholder', 'share_type', 'quantity', 'purchase_price')
+        }),
+        ('Certificate Information', {
+            'fields': ('certificate_number', 'certificate_issue_date', 'certificate_printed', 
+                       'certificate_printed_at', 'certificate_printed_by', 'certificate_template')
+        }),
+        ('Issue Details', {
+            'fields': ('issue_date', 'is_locked')
+        }),
+        ('Transfer Tracking', {
+            'fields': ('transferred_from', 'transfer_date', 'transfer_notes'),
+            'classes': ('collapse',)
+        }),
+        ('Notes', {
+            'fields': ('notes', 'certificate_notes')
+        }),
+        ('System Fields', {
+            'fields': ('created_by', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    actions = ['generate_certificate', 'print_selected_certificates']
+    
+    def generate_certificate(self, request, queryset):
+        """Generate certificate for selected shares"""
+        count = 0
+        for share in queryset:
+            if not share.certificate_number:
+                share.certificate_number = f"CERT-{share.id:06d}"
+                share.certificate_issue_date = now().date()
+                share.certificate_printed = True
+                share.certificate_printed_at = now()
+                share.certificate_printed_by = request.user
+                share.save()
+                count += 1
+        self.message_user(request, f"✅ {count} certificates generated!")
+    generate_certificate.short_description = "📄 Generate Certificates"
+    
+    def print_selected_certificates(self, request, queryset):
+        """Print certificates for selected shares"""
+        from .certificate_utils import generate_bulk_certificates
+        share_ids = list(queryset.values_list('id', flat=True))
+        zip_buffer = generate_bulk_certificates(share_ids)
+        response = HttpResponse(zip_buffer, content_type='application/zip')
+        response['Content-Disposition'] = 'attachment; filename="share_certificates.zip"'
+        return response
+    print_selected_certificates.short_description = "🖨️ Print Selected Certificates"
+
+# ============================================
+# DRIP ADMIN REGISTRATIONS
+# ============================================
+
+@admin.register(DividendReinvestmentPlan)
+class DividendReinvestmentPlanAdmin(admin.ModelAdmin):
+    list_display = ('dividend', 'plan_name', 'discount_type', 'discount_value', 'status', 'is_auto_enroll')
+    list_filter = ('status', 'discount_type', 'is_auto_enroll')
+    search_fields = ('plan_name', 'dividend__dividend_no')
+    readonly_fields = ('created_at', 'updated_at')
+    
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('dividend', 'plan_name', 'status')
+        }),
+        ('Pricing Settings', {
+            'fields': ('discount_type', 'discount_value', 'admin_fee')
+        }),
+        ('Share Limits', {
+            'fields': ('min_shares', 'max_shares', 'fractional_shares_allowed', 'round_down_to_nearest')
+        }),
+        ('Dates', {
+            'fields': ('start_date', 'end_date')
+        }),
+        ('Enrollment', {
+            'fields': ('is_auto_enroll', 'is_default')
+        }),
+        ('System Fields', {
+            'fields': ('created_by', 'created_at', 'updated_at', 'notes'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    actions = ['activate', 'deactivate', 'auto_enroll']
+    
+    def activate(self, request, queryset):
+        queryset.update(status='active')
+        self.message_user(request, f"✅ {queryset.count()} DRIP plans activated")
+    activate.short_description = "Activate Selected Plans"
+    
+    def deactivate(self, request, queryset):
+        queryset.update(status='inactive')
+        self.message_user(request, f"⚠️ {queryset.count()} DRIP plans deactivated")
+    deactivate.short_description = "Deactivate Selected Plans"
+    
+    def auto_enroll(self, request, queryset):
+        count = 0
+        for drip in queryset:
+            if drip.is_auto_enroll:
+                shareholders = Shareholder.objects.filter(status='active')
+                for shareholder in shareholders:
+                    ShareholderDRIPEnrollment.objects.get_or_create(
+                        shareholder=shareholder,
+                        drip=drip,
+                        defaults={'status': 'active', 'created_by': request.user}
+                    )
+                    count += 1
+        self.message_user(request, f"✅ {count} shareholders auto-enrolled")
+    auto_enroll.short_description = "Auto-Enroll All Shareholders"
+
+
+@admin.register(ShareholderDRIPEnrollment)
+class ShareholderDRIPEnrollmentAdmin(admin.ModelAdmin):
+    list_display = ('shareholder', 'drip', 'status', 'enrollment_date', 'auto_reinvest')
+    list_filter = ('status', 'auto_reinvest', 'enrollment_date')
+    search_fields = ('shareholder__name', 'drip__plan_name')
+    readonly_fields = ('created_at', 'updated_at')
+    
+    actions = ['activate_enrollments', 'deactivate_enrollments']
+    
+    def activate_enrollments(self, request, queryset):
+        queryset.update(status='active')
+        self.message_user(request, f"✅ {queryset.count()} enrollments activated")
+    activate_enrollments.short_description = "Activate Selected"
+    
+    def deactivate_enrollments(self, request, queryset):
+        queryset.update(status='inactive')
+        self.message_user(request, f"⚠️ {queryset.count()} enrollments deactivated")
+    deactivate_enrollments.short_description = "Deactivate Selected"
+
+
+@admin.register(DRIPTransaction)
+class DRIPTransactionAdmin(admin.ModelAdmin):
+    list_display = ('reference_no', 'dividend_payment', 'shares_purchased', 'purchase_price', 'total_cost', 'status')
+    list_filter = ('status', 'processed_at')
+    search_fields = ('reference_no', 'dividend_payment__shareholder__name')
+    readonly_fields = ('reference_no', 'created_at')
+    
+# admin.py - Add these
+
+@admin.register(ShareBuyback)
+class ShareBuybackAdmin(admin.ModelAdmin):
+    list_display = ('buyback_no', 'buyback_type', 'total_amount', 'shares_bought', 'progress_percent', 'status')
+    list_filter = ('status', 'buyback_type')
+    search_fields = ('buyback_no', 'description')
+    readonly_fields = ('buyback_no', 'created_at', 'updated_at')
+    
+    actions = ['approve_buyback', 'complete_buyback']
+    
+    def approve_buyback(self, request, queryset):
+        queryset.update(status='approved', approved_by=request.user, approved_at=now())
+        self.message_user(request, f"✅ {queryset.count()} buybacks approved")
+    approve_buyback.short_description = "Approve Selected Buybacks"
+    
+    def complete_buyback(self, request, queryset):
+        queryset.update(status='completed', completed_at=now())
+        self.message_user(request, f"✅ {queryset.count()} buybacks completed")
+    complete_buyback.short_description = "Complete Selected Buybacks"
+
+
+@admin.register(ShareholderDiscountProgram)
+class ShareholderDiscountProgramAdmin(admin.ModelAdmin):
+    list_display = ('name', 'discount_value', 'min_shares_required', 'is_active', 'priority')
+    list_filter = ('is_active', 'discount_type')
+    search_fields = ('name',)
+    filter_horizontal = ('products', 'categories')
+
+
+@admin.register(ShareholderLoan)
+class ShareholderLoanAdmin(admin.ModelAdmin):
+    list_display = ('loan_no', 'shareholder', 'principal', 'outstanding', 'status', 'get_ltv_percent')
+    list_filter = ('status', 'loan_type')
+    search_fields = ('loan_no', 'shareholder__name')
+    readonly_fields = ('loan_no', 'created_at', 'updated_at')
+    
+    actions = ['approve_loans', 'disburse_loans']
+    
+    def approve_loans(self, request, queryset):
+        queryset.update(status='approved', approved_by=request.user, approved_at=now())
+        self.message_user(request, f"✅ {queryset.count()} loans approved")
+    approve_loans.short_description = "Approve Selected Loans"
+    
+    def disburse_loans(self, request, queryset):
+        queryset.update(status='active', disbursement_date=now().date())
+        self.message_user(request, f"✅ {queryset.count()} loans disbursed")
+    disburse_loans.short_description = "Disburse Selected Loans"
+    
+# ============================================
+# SERVICE ADMIN REGISTRATIONS
+# ============================================
+
+from .models import (
+    ServiceCategory, Service, ServiceProductRequirement,
+    ServiceRequest, ServiceProductUsed, ServiceAppointment,
+    ServiceTechnicianAssignment, ServiceFeedback
+)
+
+class ServiceProductRequirementInline(admin.TabularInline):
+    model = ServiceProductRequirement
+    fields = ('product', 'quantity', 'is_optional')
+    extra = 1
+    raw_id_fields = ('product',)  # ✅ FIXED: Using raw_id_fields
+    # OR autocomplete_fields = ('product',) if ProductAdmin has search_fields
+
+
+class ServiceProductUsedInline(admin.TabularInline):
+    model = ServiceProductUsed
+    fields = ('product', 'quantity', 'price', 'total')
+    readonly_fields = ('total',)
+    extra = 1
+    raw_id_fields = ('product',)  # ✅ FIXED: Using raw_id_fields
+    # OR autocomplete_fields = ('product',) if ProductAdmin has search_fields
+
+
+@admin.register(ServiceCategory)
+class ServiceCategoryAdmin(admin.ModelAdmin):
+    list_display = ('name', 'is_active', 'created_at')
+    list_filter = ('is_active',)
+    search_fields = ('name',)
+    list_editable = ('is_active',)
+
+
+@admin.register(Service)
+class ServiceAdmin(admin.ModelAdmin):
+    list_display = ('service_code', 'name', 'service_type', 'price', 'pricing_type', 'is_active')
+    list_filter = ('service_type', 'pricing_type', 'is_active', 'category')
+    search_fields = ('service_code', 'name', 'description')
+    list_editable = ('price', 'is_active')
+    inlines = [ServiceProductRequirementInline]
+    
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('service_code', 'name', 'service_type', 'category', 'description')
+        }),
+        ('Pricing', {
+            'fields': ('pricing_type', 'price', 'estimated_hours', 'min_charge', 'max_charge')
+        }),
+        ('Staff & Settings', {
+            'fields': ('requires_technician', 'default_technician', 'needs_appointment', 'warranty_months')
+        }),
+        ('Status', {
+            'fields': ('is_active',)
+        }),
+        ('System', {
+            'fields': ('created_by', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    actions = ['activate', 'deactivate']
+    
+    def activate(self, request, queryset):
+        queryset.update(is_active=True)
+        self.message_user(request, f"✅ {queryset.count()} services activated")
+    activate.short_description = "Activate Selected Services"
+    
+    def deactivate(self, request, queryset):
+        queryset.update(is_active=False)
+        self.message_user(request, f"⚠️ {queryset.count()} services deactivated")
+    deactivate.short_description = "Deactivate Selected Services"
+
+
+class ServiceAppointmentInline(admin.TabularInline):
+    model = ServiceAppointment
+    fields = ('technician', 'appointment_date', 'start_time', 'end_time', 'status')
+    extra = 1
+
+
+@admin.register(ServiceRequest)
+class ServiceRequestAdmin(admin.ModelAdmin):
+    list_display = ('request_no', 'customer', 'service', 'status', 'priority', 
+                    'scheduled_date', 'technician', 'total_amount_display', 'is_overdue_display')
+    list_filter = ('status', 'priority', 'scheduled_date', 'service__service_type')
+    search_fields = ('request_no', 'customer__name', 'customer__customer_code', 'service__name')
+    list_editable = ('status', 'priority')
+    inlines = [ServiceProductUsedInline, ServiceAppointmentInline]
+    
+    fieldsets = (
+        ('Request Information', {
+            'fields': ('request_no', 'customer', 'service', 'description', 'priority', 'status')
+        }),
+        ('Scheduling', {
+            'fields': ('requested_date', 'scheduled_date', 'appointment_time', 'estimated_hours', 'completed_date')
+        }),
+        ('Location & Contact', {
+            'fields': ('service_address', 'contact_person', 'contact_phone')
+        }),
+        ('Pricing', {
+            'fields': ('quoted_price', 'actual_price', 'discount')
+        }),
+        ('Technician', {
+            'fields': ('technician', 'assigned_at')
+        }),
+        ('Follow-up & Invoice', {
+            'fields': ('follow_up_required', 'follow_up_date', 'invoice')
+        }),
+        ('Feedback', {
+            'fields': ('feedback_rating', 'feedback_comment')
+        }),
+        ('System', {
+            'fields': ('created_by', 'created_at', 'updated_at', 'notes'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    readonly_fields = ('request_no', 'assigned_at', 'created_at', 'updated_at')
+    
+    def total_amount_display(self, obj):
+        return f"Rs. {obj.total_amount():,.2f}"
+    total_amount_display.short_description = "Total Amount"
+    
+    def is_overdue_display(self, obj):
+        if obj.is_overdue():
+            days = obj.days_overdue()
+            return format_html('<span style="color: red;">⚠️ {} days overdue</span>', days)
+        return format_html('<span style="color: green;">✅ On time</span>')
+    is_overdue_display.short_description = "Overdue"
+    
+    actions = ['mark_assigned', 'mark_in_progress', 'mark_completed', 'generate_invoice']
+    
+    def mark_assigned(self, request, queryset):
+        count = queryset.update(status='assigned', assigned_at=now())
+        self.message_user(request, f"✅ {count} requests marked as assigned")
+    mark_assigned.short_description = "👤 Mark as Assigned"
+    
+    def mark_in_progress(self, request, queryset):
+        count = queryset.update(status='in_progress')
+        self.message_user(request, f"⚙️ {count} requests marked as in progress")
+    mark_in_progress.short_description = "⚙️ Mark as In Progress"
+    
+    def mark_completed(self, request, queryset):
+        count = queryset.update(status='completed', completed_date=now().date())
+        self.message_user(request, f"✅ {count} requests marked as completed")
+    mark_completed.short_description = "✅ Mark as Completed"
+    
+    def generate_invoice(self, request, queryset):
+        """Generate invoice for completed services"""
+        count = 0
+        for service_request in queryset.filter(status='completed', invoice__isnull=True):
+            try:
+                with transaction.atomic():
+                    sale = Sale.objects.create(
+                        customer=service_request.customer,
+                        bill_no=f"SVC-{service_request.request_no}",
+                        sale_date=now(),
+                        paid=0,
+                        discount_value=service_request.discount,
+                        created_by=request.user,
+                        warehouse=Warehouse.objects.first()
+                    )
+                    
+                    SaleItem.objects.create(
+                        sale=sale,
+                        product=None,
+                        qty=1,
+                        price=service_request.total_amount(),
+                        total_amt=service_request.total_amount(),
+                        profit=0,
+                        description=f"Service: {service_request.service.name} - {service_request.request_no}"
+                    )
+                    
+                    service_request.invoice = sale
+                    service_request.save()
+                    count += 1
+                    
+            except Exception as e:
+                messages.error(request, f"❌ Error for {service_request.request_no}: {str(e)}")
+        
+        if count:
+            self.message_user(request, f"✅ {count} invoices generated!")
+    generate_invoice.short_description = "📄 Generate Invoice"
+
+
+@admin.register(ServiceAppointment)
+class ServiceAppointmentAdmin(admin.ModelAdmin):
+    list_display = ('service_request', 'technician', 'appointment_date', 'start_time', 'status')
+    list_filter = ('status', 'appointment_date', 'technician')
+    search_fields = ('service_request__request_no', 'technician__name')
+    list_editable = ('status',)
+
+
+@admin.register(ServiceTechnicianAssignment)
+class ServiceTechnicianAssignmentAdmin(admin.ModelAdmin):
+    list_display = ('technician', 'date', 'max_services', 'current_services', 'is_available', 'is_full_display')
+    list_filter = ('date', 'is_available')
+    search_fields = ('technician__name',)
+    list_editable = ('is_available',)
+    
+    def is_full_display(self, obj):
+        return "🔴 Full" if obj.is_full() else "🟢 Available"
+    is_full_display.short_description = "Status"
+
+
+@admin.register(ServiceFeedback)
+class ServiceFeedbackAdmin(admin.ModelAdmin):
+    list_display = ('service_request', 'rating', 'average_rating_display', 'would_recommend', 'created_at')
+    list_filter = ('rating', 'would_recommend')
+    search_fields = ('service_request__request_no', 'comment')
+    readonly_fields = ('service_request', 'created_at')
+    
+    def average_rating_display(self, obj):
+        return f"{obj.average_rating()}★"
+    average_rating_display.short_description = "Avg Rating"
+    
+# ============================================
+# SERVICE INVENTORY ADMIN
+# ============================================
+
+from .models import (
+    ServiceInventoryCategory, ServiceInventory, ServiceInventoryTransaction,
+    ServicePartUsage, ServiceInventoryPurchaseOrder, ServiceInventoryPODetail,
+    ServiceInventoryStockAdjustment
+)
+
+
+@admin.register(ServiceInventoryCategory)
+class ServiceInventoryCategoryAdmin(admin.ModelAdmin):
+    list_display = ('name', 'is_active', 'created_at')
+    list_filter = ('is_active',)
+    search_fields = ('name', 'description')
+    list_editable = ('is_active',)
+
+
+class ServiceInventoryTransactionInline(admin.TabularInline):
+    model = ServiceInventoryTransaction
+    fields = ('transaction_type', 'quantity', 'balance_after', 'notes', 'created_at')
+    readonly_fields = ('created_at',)
+    extra = 0
+    can_delete = False
+
+
+@admin.register(ServiceInventory)
+class ServiceInventoryAdmin(admin.ModelAdmin):
+    list_display = ('item_code', 'name', 'item_type', 'category', 'current_stock', 
+                    'reorder_level', 'unit_cost', 'selling_price', 'is_low_stock_display', 'is_active')
+    list_filter = ('item_type', 'category', 'is_active', 'is_consumable')
+    search_fields = ('item_code', 'name', 'description', 'barcode')
+    list_editable = ('current_stock', 'reorder_level', 'unit_cost', 'selling_price', 'is_active')
+    inlines = [ServiceInventoryTransactionInline]
+    
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('item_code', 'name', 'description', 'item_type', 'category', 'product')
+        }),
+        ('Stock Management', {
+            'fields': ('current_stock', 'min_stock', 'max_stock', 'reorder_level', 'reorder_quantity')
+        }),
+        ('Pricing', {
+            'fields': ('unit_cost', 'selling_price', 'markup_percent')
+        }),
+        ('Location & Supplier', {
+            'fields': ('unit', 'warehouse', 'shelf_location', 'preferred_supplier')
+        }),
+        ('Barcode & Settings', {
+            'fields': ('barcode', 'is_active', 'is_consumable', 'is_serialized')
+        }),
+        ('System', {
+            'fields': ('created_by', 'created_at', 'last_updated', 'updated_by'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    readonly_fields = ('item_code', 'created_at', 'last_updated')
+    
+    def is_low_stock_display(self, obj):
+        if obj.is_critical_stock():
+            return format_html('<span style="color: red; font-weight: bold;">⚠️ Critical</span>')
+        elif obj.is_low_stock():
+            return format_html('<span style="color: orange; font-weight: bold;">⚠️ Low</span>')
+        return format_html('<span style="color: green;">✅ OK</span>')
+    is_low_stock_display.short_description = "Stock Status"
+    
+    actions = ['mark_active', 'mark_inactive', 'set_reorder_level']
+    
+    def mark_active(self, request, queryset):
+        queryset.update(is_active=True)
+        self.message_user(request, f"✅ {queryset.count()} items activated")
+    mark_active.short_description = "Activate Selected"
+    
+    def mark_inactive(self, request, queryset):
+        queryset.update(is_active=False)
+        self.message_user(request, f"⚠️ {queryset.count()} items deactivated")
+    mark_inactive.short_description = "Deactivate Selected"
+    
+    def set_reorder_level(self, request, queryset):
+        # Custom action to set reorder level
+        level = request.POST.get('reorder_level')
+        if level:
+            queryset.update(reorder_level=level)
+            self.message_user(request, f"✅ Reorder level set to {level}")
+    set_reorder_level.short_description = "Set Reorder Level"
+
+
+@admin.register(ServiceInventoryTransaction)
+class ServiceInventoryTransactionAdmin(admin.ModelAdmin):
+    list_display = ('inventory_item', 'transaction_type', 'quantity', 'balance_after', 'created_at', 'created_by')
+    list_filter = ('transaction_type', 'created_at')
+    search_fields = ('inventory_item__name', 'inventory_item__item_code', 'notes')
+    readonly_fields = ('created_at',)
+    
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(ServicePartUsage)
+class ServicePartUsageAdmin(admin.ModelAdmin):
+    list_display = ('service_request', 'inventory_item', 'quantity', 'total_cost', 'total_charged', 'used_at')
+    list_filter = ('used_at', 'charged_to_customer')
+    search_fields = ('service_request__request_no', 'inventory_item__name')
+    readonly_fields = ('total_cost', 'total_charged', 'used_at')
+    
+    def has_add_permission(self, request):
+        return False
+
+
+class ServiceInventoryPODetailInline(admin.TabularInline):
+    model = ServiceInventoryPODetail
+    fields = ('inventory_item', 'quantity', 'unit_price', 'total_price', 'received_quantity')
+    readonly_fields = ('total_price',)
+    extra = 1
+
+
+@admin.register(ServiceInventoryPurchaseOrder)
+class ServiceInventoryPurchaseOrderAdmin(admin.ModelAdmin):
+    list_display = ('po_no', 'supplier', 'order_date', 'status', 'total_amount', 'net_amount')
+    list_filter = ('status', 'order_date')
+    search_fields = ('po_no', 'supplier__name')
+    inlines = [ServiceInventoryPODetailInline]
+    
+    fieldsets = (
+        ('Order Information', {
+            'fields': ('po_no', 'supplier', 'status')
+        }),
+        ('Dates', {
+            'fields': ('order_date', 'expected_delivery', 'received_date')
+        }),
+        ('Amounts', {
+            'fields': ('total_amount', 'discount', 'net_amount')
+        }),
+        ('Notes', {
+            'fields': ('notes',)
+        }),
+    )
+    
+    readonly_fields = ('po_no', 'order_date', 'total_amount', 'net_amount')
+    
+    actions = ['mark_received', 'mark_approved', 'mark_ordered']
+    
+    def mark_received(self, request, queryset):
+        for po in queryset.filter(status__in=['ordered', 'partial']):
+            po.mark_received()
+        self.message_user(request, f"✅ {queryset.count()} POs marked as received")
+    mark_received.short_description = "📥 Mark as Received"
+    
+    def mark_approved(self, request, queryset):
+        queryset.update(status='approved')
+        self.message_user(request, f"✅ {queryset.count()} POs approved")
+    mark_approved.short_description = "✅ Mark as Approved"
+    
+    def mark_ordered(self, request, queryset):
+        queryset.update(status='ordered')
+        self.message_user(request, f"📦 {queryset.count()} POs marked as ordered")
+    mark_ordered.short_description = "📦 Mark as Ordered"
+
+
+@admin.register(ServiceInventoryStockAdjustment)
+class ServiceInventoryStockAdjustmentAdmin(admin.ModelAdmin):
+    list_display = ('adjustment_no', 'inventory_item', 'adjustment_type', 'quantity', 
+                    'previous_stock', 'new_stock', 'performed_at', 'performed_by')
+    list_filter = ('adjustment_type', 'performed_at')
+    search_fields = ('inventory_item__name', 'reason')
+    readonly_fields = ('adjustment_no', 'previous_stock', 'new_stock', 'performed_at')
+    
+    def has_change_permission(self, request, obj=None):
+        return False
+        
+
+from django.contrib import admin
+from django.utils.html import format_html
+from django.utils.timezone import now
+from django.db.models import Sum
+
+from .models import (
+    Department, Project,
+    ExpenseCategory, ExpenseBudget, Expense, ExpenseApprovalHistory,
+    ExpenseClaim, ExpenseForecast
+)
+
+
+# ============================================
+# DEPARTMENT & PROJECT ADMIN
+# ============================================
+
+@admin.register(Department)
+class DepartmentAdmin(admin.ModelAdmin):
+    list_display = ('code', 'name', 'description', 'is_active')
+    list_filter = ('is_active',)
+    search_fields = ('name', 'code', 'description')
+    list_editable = ('is_active',)
+
+
+@admin.register(Project)
+class ProjectAdmin(admin.ModelAdmin):
+    list_display = ('code', 'name', 'department', 'status', 'budget', 'total_expenses_display', 'is_active')
+    list_filter = ('status', 'department', 'is_active')
+    search_fields = ('name', 'code', 'description')
+    list_editable = ('status', 'is_active')
+    
+    def total_expenses_display(self, obj):
+        return f"Rs. {obj.total_expenses():,.2f}"
+    total_expenses_display.short_description = "Total Expenses"
+
+
+# ============================================
+# EXPENSE CATEGORY ADMIN
+# ============================================
+
+@admin.register(ExpenseCategory)
+class ExpenseCategoryAdmin(admin.ModelAdmin):
+    list_display = ('code', 'name', 'category_type', 'parent', 'is_active')
+    list_filter = ('category_type', 'is_active')
+    search_fields = ('name', 'code', 'description')
+    list_editable = ('is_active',)
+    readonly_fields = ('code',)
+
+
+# ============================================
+# EXPENSE BUDGET ADMIN
+# ============================================
+
+@admin.register(ExpenseBudget)
+class ExpenseBudgetAdmin(admin.ModelAdmin):
+    list_display = ('name', 'category', 'department', 'project', 'budget_period', 
+                    'period_start', 'period_end', 'allocated_amount', 'used_amount', 
+                    'remaining_amount', 'status')
+    list_filter = ('status', 'budget_period', 'category', 'department')
+    search_fields = ('name', 'category__name', 'department__name')
+    list_editable = ('status',)
+    readonly_fields = ('used_amount', 'remaining_amount')
+    
+    actions = ['activate_budgets', 'approve_budgets', 'expire_budgets']
+    
+    def activate_budgets(self, request, queryset):
+        count = queryset.update(status='active')
+        self.message_user(request, f"✅ {count} budgets activated")
+    activate_budgets.short_description = "✅ Activate Selected Budgets"
+    
+    def approve_budgets(self, request, queryset):
+        count = queryset.update(status='approved', approved_by=request.user, approved_at=now())
+        self.message_user(request, f"✅ {count} budgets approved")
+    approve_budgets.short_description = "✅ Approve Selected Budgets"
+    
+    def expire_budgets(self, request, queryset):
+        count = queryset.update(status='expired')
+        self.message_user(request, f"⏰ {count} budgets expired")
+    expire_budgets.short_description = "⏰ Expire Selected Budgets"
+
+
+# ============================================
+# EXPENSE APPROVAL HISTORY INLINE
+# ============================================
+
+class ExpenseApprovalHistoryInline(admin.TabularInline):
+    model = ExpenseApprovalHistory
+    fields = ('action', 'performed_by', 'remarks', 'performed_at')
+    readonly_fields = ('performed_at',)
+    extra = 0
+    can_delete = False
+
+
+# ============================================
+# ✅ EXPENSE ADMIN - COMPLETELY FIXED
+# ============================================
+
+@admin.register(Expense)
+class ExpenseAdmin(admin.ModelAdmin):
+    # ✅ NO 'date' FIELD ANYWHERE
+    list_display = (
+        'expense_no',
+        'description',
+        'category',
+        'amount',
+        'expense_date',
+        'status_display',
+        'payment_method',
+        'created_by'
+    )
+    
+    list_filter = (
+        'status',
+        'category',
+        'payment_method',
+        'expense_date',
+        'department'
+    )
+    
+    search_fields = ('expense_no', 'description', 'reference_no', 'vendor__name')
+    
+    # ✅ NO list_editable - removed completely
+    # list_editable = ()  # Empty
+    
+    inlines = [ExpenseApprovalHistoryInline]
+    readonly_fields = ('expense_no', 'total_amount', 'created_at', 'updated_at')
+    
+    fieldsets = (
+        ('Expense Information', {
+            'fields': ('expense_no', 'category', 'description', 'amount', 'expense_date')
+        }),
+        ('Payment Details', {
+            'fields': ('payment_method', 'reference_no', 'vendor', 'vendor_invoice_no')
+        }),
+        ('Tax', {
+            'fields': ('tax_rate', 'tax_amount', 'total_amount')
+        }),
+        ('Budget & Cost Center', {
+            'fields': ('budget', 'department', 'project', 'cost_center')
+        }),
+        ('Approval', {
+            'fields': ('status', 'submitted_by', 'submitted_at', 'approved_by', 
+                      'approved_at', 'rejection_reason')
+        }),
+        ('Payment', {
+            'fields': ('paid_by', 'paid_at', 'payment_date')
+        }),
+        ('Documents', {
+            'fields': ('receipt', 'attachment')
+        }),
+        ('Recurring', {
+            'fields': ('is_recurring', 'recurring_frequency', 'recurring_end_date'),
+            'classes': ('collapse',)
+        }),
+        ('System', {
+            'fields': ('created_by', 'created_at', 'updated_at', 'notes'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def status_display(self, obj):
+        return format_html(obj.get_status_badge())
+    status_display.short_description = "Status"
+    
+    actions = ['submit_expenses', 'approve_expenses', 'reject_expenses', 'mark_paid']
+    
+    def submit_expenses(self, request, queryset):
+        count = 0
+        for expense in queryset.filter(status='draft'):
+            expense.submit(request.user)
+            count += 1
+        self.message_user(request, f"📤 {count} expenses submitted")
+    submit_expenses.short_description = "📤 Submit Selected Expenses"
+    
+    def approve_expenses(self, request, queryset):
+        count = 0
+        for expense in queryset.filter(status='submitted'):
+            expense.approve(request.user)
+            count += 1
+        self.message_user(request, f"✅ {count} expenses approved")
+    approve_expenses.short_description = "✅ Approve Selected Expenses"
+    
+    def reject_expenses(self, request, queryset):
+        count = 0
+        for expense in queryset.filter(status__in=['submitted', 'review']):
+            expense.reject(request.user, "Rejected via bulk action")
+            count += 1
+        self.message_user(request, f"❌ {count} expenses rejected")
+    reject_expenses.short_description = "❌ Reject Selected Expenses"
+    
+    def mark_paid(self, request, queryset):
+        count = 0
+        for expense in queryset.filter(status='approved'):
+            expense.mark_paid(request.user)
+            count += 1
+        self.message_user(request, f"💰 {count} expenses marked as paid")
+    mark_paid.short_description = "💰 Mark as Paid"
+
+
+# ============================================
+# EXPENSE CLAIM ADMIN
+# ============================================
+
+@admin.register(ExpenseClaim)
+class ExpenseClaimAdmin(admin.ModelAdmin):
+    list_display = ('claim_no', 'employee', 'title', 'total_amount', 'claim_date', 'status')
+    list_filter = ('status', 'claim_date', 'employee')
+    search_fields = ('claim_no', 'employee__name', 'title')
+    list_editable = ('status',)
+    filter_horizontal = ('expenses',)
+    readonly_fields = ('claim_no', 'total_amount')
+    
+    actions = ['approve_claims', 'reject_claims', 'mark_reimbursed']
+    
+    def approve_claims(self, request, queryset):
+        count = queryset.update(status='approved', approved_by=request.user, approved_at=now())
+        self.message_user(request, f"✅ {count} claims approved")
+    approve_claims.short_description = "✅ Approve Selected Claims"
+    
+    def reject_claims(self, request, queryset):
+        count = queryset.update(status='rejected', approved_by=request.user, approved_at=now())
+        self.message_user(request, f"❌ {count} claims rejected")
+    reject_claims.short_description = "❌ Reject Selected Claims"
+    
+    def mark_reimbursed(self, request, queryset):
+        count = queryset.update(status='reimbursed', reimbursed_by=request.user, reimbursed_at=now())
+        self.message_user(request, f"💰 {count} claims marked as reimbursed")
+    mark_reimbursed.short_description = "💰 Mark as Reimbursed"
+
+
+# ============================================
+# EXPENSE FORECAST ADMIN
+# ============================================
+
+@admin.register(ExpenseForecast)
+class ExpenseForecastAdmin(admin.ModelAdmin):
+    list_display = ('month', 'forecasted_amount', 'actual_amount', 'variance', 'variance_percent')
+    list_filter = ('month',)
+    search_fields = ('notes',)
+    readonly_fields = ('variance', 'variance_percent')
+
+# ============================================
+# BUDGET ADMIN REGISTRATION
+# ============================================
+
+from .models import Budget, BudgetAllocation, BudgetTransaction, BudgetAlert, BudgetForecast
+
+class BudgetAllocationInline(admin.TabularInline):
+    model = BudgetAllocation
+    fields = ('category', 'allocated_amount', 'used_amount', 'remaining_amount')
+    readonly_fields = ('used_amount', 'remaining_amount')
+    extra = 1
+
+
+class BudgetTransactionInline(admin.TabularInline):
+    model = BudgetTransaction
+    fields = ('transaction_type', 'amount', 'balance_after', 'description')
+    readonly_fields = ('balance_after', 'performed_at')
+    extra = 0
+    can_delete = False
+
+
+@admin.register(Budget)
+class BudgetAdmin(admin.ModelAdmin):
+    list_display = ('budget_no', 'name', 'budget_type', 'department', 'project', 
+                    'allocated_amount', 'used_amount', 'remaining_amount', 
+                    'utilization_display', 'status_display', 'period_end')
+    list_filter = ('budget_type', 'status', 'frequency', 'department')
+    search_fields = ('budget_no', 'name', 'description')
+    inlines = [BudgetAllocationInline, BudgetTransactionInline]
+    
+    fieldsets = (
+        ('Budget Information', {
+            'fields': ('budget_no', 'name', 'budget_type', 'description')
+        }),
+        ('Amounts', {
+            'fields': ('allocated_amount', 'used_amount', 'remaining_amount', 'reserved_amount')
+        }),
+        ('Period', {
+            'fields': ('period_start', 'period_end', 'frequency')
+        }),
+        ('Links', {
+            'fields': ('department', 'project', 'category')
+        }),
+        ('Status', {
+            'fields': ('status', 'alert_threshold', 'critical_threshold', 
+                      'approved_by', 'approved_at', 'submitted_by', 'submitted_at')
+        }),
+        ('Settings', {
+            'fields': ('allow_rollover', 'rollover_from')
+        }),
+        ('System', {
+            'fields': ('created_by', 'created_at', 'updated_at', 'notes'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    readonly_fields = ('budget_no', 'used_amount', 'remaining_amount', 'created_at', 'updated_at')
+    
+    def utilization_display(self, obj):
+        percent = obj.utilization_percent()
+        if percent >= obj.critical_threshold:
+            color = 'red'
+        elif percent >= obj.alert_threshold:
+            color = 'orange'
+        else:
+            color = 'green'
+        return format_html(
+            '<span style="color: {}; font-weight: bold;">{:.1f}%</span>',
+            color, percent
+        )
+    utilization_display.short_description = "Utilization"
+    
+    def status_display(self, obj):
+        return format_html(obj.get_status_badge())
+    status_display.short_description = "Status"
+    
+    actions = ['approve_budgets', 'activate_budgets', 'submit_budgets']
+    
+    def submit_budgets(self, request, queryset):
+        for budget in queryset.filter(status='draft'):
+            budget.submit(request.user)
+        self.message_user(request, f"📤 {queryset.count()} budgets submitted")
+    submit_budgets.short_description = "📤 Submit for Approval"
+    
+    def approve_budgets(self, request, queryset):
+        for budget in queryset.filter(status='pending'):
+            budget.approve(request.user)
+        self.message_user(request, f"✅ {queryset.count()} budgets approved")
+    approve_budgets.short_description = "✅ Approve Selected Budgets"
+    
+    def activate_budgets(self, request, queryset):
+        for budget in queryset.filter(status='approved'):
+            budget.activate(request.user)
+        self.message_user(request, f"✅ {queryset.count()} budgets activated")
+    activate_budgets.short_description = "✅ Activate Selected Budgets"
+
+
+@admin.register(BudgetAlert)
+class BudgetAlertAdmin(admin.ModelAdmin):
+    list_display = ('budget', 'alert_type', 'message', 'status', 'triggered_at')
+    list_filter = ('alert_type', 'status')
+    search_fields = ('budget__name', 'message')
+    list_editable = ('status',)
+    
+    actions = ['resolve_alerts']
+    
+    def resolve_alerts(self, request, queryset):
+        for alert in queryset.filter(status__in=['new', 'read']):
+            alert.resolve(request.user)
+        self.message_user(request, f"✅ {queryset.count()} alerts resolved")
+    resolve_alerts.short_description = "✅ Resolve Selected Alerts"
+
+
+@admin.register(BudgetForecast)
+class BudgetForecastAdmin(admin.ModelAdmin):
+    list_display = ('budget', 'forecast_date', 'forecasted_amount', 'actual_amount', 
+                    'variance', 'variance_percent', 'confidence_level')
+    list_filter = ('forecast_date',)
+    search_fields = ('budget__name',)
