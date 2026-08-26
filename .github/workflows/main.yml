@@ -29,7 +29,7 @@ jobs:
         curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
         sudo dpkg -i cloudflared.deb
 
-    - name: Professional Database Migration & Health Check
+    - name: Database Migration
       env:
         DB_HOST: ${{ secrets.DB_HOST }}
         DB_USER: ${{ secrets.DB_USER }}
@@ -43,79 +43,15 @@ jobs:
         DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
-        # 1. Merge conflicting migrations
-        echo "Merging conflicting migrations..."
+        # Simple migrations - ab axes disabled hai toh error nahi aayega
         python manage.py makemigrations --merge --no-input || true
-        
-        # 2. CRITICAL: Force create axes tables first
-        echo "Creating Axes tables..."
-        python manage.py migrate axes --no-input || true
-        
-        # 3. Fake apply all existing migrations
-        echo "Fake applying all existing migrations..."
         python manage.py migrate --fake --no-input || true
-        
-        # 4. Create new migrations if needed
-        echo "Creating new migrations if needed..."
         python manage.py makemigrations --no-input || true
-        
-        # 5. Apply new migrations
-        echo "Applying new migrations only..."
         python manage.py migrate --no-input || true
-        
-        # 6. Verify axes tables exist
-        python -c "
-        import os, pymysql
-        pymysql.install_as_MySQLdb()
-        import django
-        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
-        django.setup()
-        from django.db import connection
-        with connection.cursor() as cursor:
-            cursor.execute('SHOW TABLES LIKE \"axes_accessattempt\"')
-            if cursor.fetchone():
-                print('✓ axes_accessattempt table exists')
-            else:
-                print('✗ axes_accessattempt table missing - creating now')
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS axes_accessattempt (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
-                        ip_address VARCHAR(45) NULL,
-                        username VARCHAR(255) NULL,
-                        user_agent VARCHAR(255) NULL,
-                        path_info VARCHAR(255) NULL,
-                        failures_since_start INT DEFAULT 0,
-                        attempt_time DATETIME NOT NULL,
-                        get_data TEXT NULL,
-                        post_data TEXT NULL,
-                        http_accept VARCHAR(1024) NULL,
-                        locked_out BOOL NOT NULL DEFAULT FALSE
-                    )
-                ''')
-                print('✓ axes_accessattempt table created manually')
-        "
 
-        # 7. Schema Compatibility Check
-        python -c "
-        import os, pymysql
-        pymysql.install_as_MySQLdb()
-        import django
-        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
-        django.setup()
-        from django.db import connection
-        with connection.cursor() as cursor:
-            try:
-                cursor.execute('ALTER TABLE auth_user MODIFY COLUMN last_login DATETIME(6) NULL DEFAULT NULL;')
-                print('Checked & verified auth_user schema compatibility.')
-            except Exception as e:
-                print('Schema check note:', e)
-        "
-
-        # 8. Ensure Superuser exists
+        # Superuser create
         python -c "
         import os
-        import pymysql
-        pymysql.install_as_MySQLdb()
         import django
         os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
         django.setup()
@@ -128,38 +64,20 @@ jobs:
             User.objects.create_superuser(username, email, password)
             print('Superuser created successfully.')
         else:
-            print('Superuser already exists. Skipping recreation to preserve data.')
+            print('Superuser already exists.')
         "
 
-        echo "=========================================="
-        echo "Database health check & migrations completed safely!"
-        echo "=========================================="
-
-    - name: Launch Permanent Cloudflare Tunnel
+    - name: Launch Cloudflare Tunnel
       env:
-        DB_HOST: ${{ secrets.DB_HOST }}
-        DB_USER: ${{ secrets.DB_USER }}
-        DB_PASS: ${{ secrets.DB_PASS }}
-        DB_PASSWORD: ${{ secrets.DB_PASS }}
-        DB_NAME: ${{ secrets.DB_NAME }}
-        DB_PORT: ${{ secrets.DB_PORT }}
-        DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
-        DJANGO_SALT_KEY: ${{ secrets.DJANGO_SALT_KEY }}
-        DJANGO_SUPERUSER_NAME: ${{ secrets.DJANGO_SUPERUSER_NAME }}
-        DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
-        DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
         TUNNEL_CREDS: ${{ secrets.CLOUDFLARE_CREDENTIALS }}
         TUNNEL_UUID: "1a0537c0-5705-4b1d-9887-bd4e31e4450b"
       run: |
-        # Background mein Django server start karein
         python manage.py runserver 0.0.0.0:8000 &
         sleep 3
 
-        # Cloudflare Tunnel directory setup
         mkdir -p ~/.cloudflared
         echo "$TUNNEL_CREDS" > ~/.cloudflared/$TUNNEL_UUID.json
 
-        # Config File Create Karein
         cat <<EOF > ~/.cloudflared/config.yml
         tunnel: $TUNNEL_UUID
         credentials-file: /home/runner/.cloudflared/$TUNNEL_UUID.json
@@ -169,22 +87,5 @@ jobs:
           - service: http_status:404
         EOF
 
-        STATIC_URL="https://hadi88.online"
-
-        # Send Alert to ntfy
-        curl -s -X POST https://ntfy.sh/lev_nasiiar_link_988 \
-          -H "Title: 🚀 Live Django Application Active" \
-          -H "Click: $STATIC_URL" \
-          -H "Priority: high" \
-          -H "Tags: rocket,link" \
-          -d "Your static application is live at: $STATIC_URL"
-
-        echo "=========================================================="
-        echo "🚀 ACCESS YOUR DJANGO APP HERE:"
-        echo "👉 $STATIC_URL"
-        echo "=========================================================="
-        echo "🔑 Database integrity maintained without data drops."
-        echo "=========================================================="
-
-        # Permanent Tunnel ko FOREGROUND mein run karein
+        echo "🚀 Application live at: https://hadi88.online"
         cloudflared tunnel --config ~/.cloudflared/config.yml run $TUNNEL_UUID
