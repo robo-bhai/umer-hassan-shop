@@ -43,19 +43,19 @@ jobs:
         DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
-        # 1. Pehle normal migration run karne ki koshish karein
-        python manage.py makemigrations --merge --no-input || true
+        # 1. Pehle saari apps ke liye makemigrations aur migrate chalayein taake missing tables create ho jayein
+        python manage.py makemigrations --no-input || true
         
-        # 2. Agar table pehle se mojood hone ya missing hone ka error aaye toh handle karein
+        # 2. Database migration with full fallback handling
         if python manage.py migrate; then
             echo "✅ Database migrated successfully without errors!"
         else
-            echo "⚠️ Migration failed! Trying with --fake-initial and retry..."
+            echo "⚠️ Migration failed! Trying with --fake-initial and specific app sync..."
             python manage.py migrate --fake-initial || true
             if python manage.py migrate; then
                 echo "✅ Database migrated successfully after fallback!"
             else
-                echo "⚠️ Migration still failed! Flushing database completely..."
+                echo "⚠️ Migration still failed! Flushing database completely and re-running..."
                 python manage.py flush --no-input || true
                 python manage.py migrate --run-syncdb
                 python manage.py migrate
