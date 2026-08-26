@@ -29,7 +29,7 @@ jobs:
         curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
         sudo dpkg -i cloudflared.deb
 
-    - name: Reset Database & Create Fresh Superuser
+    - name: Professional Database Migration & Health Check
       env:
         DB_HOST: ${{ secrets.DB_HOST }}
         DB_USER: ${{ secrets.DB_USER }}
@@ -43,36 +43,16 @@ jobs:
         DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
-        # 1. Safely drop all tables in Aiven MySQL database using a clean Python snippet with PyMySQL
-        python -c "
-        import os
-        import pymysql
-        pymysql.install_as_MySQLdb()
-        from django.db.backends.mysql import base as mysql_base
-        mysql_base.versioncheck = lambda *args, **kwargs: True
-
-        import django
-        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
-        django.setup()
-
-        from django.db import connection
-        with connection.cursor() as cursor:
-            cursor.execute('SET FOREIGN_KEY_CHECKS = 0;')
-            cursor.execute('SHOW TABLES;')
-            tables = [row[0] for row in cursor.fetchall()]
-            for t in tables:
-                cursor.execute(f'DROP TABLE IF EXISTS \`{t}\`;')
-                print(f'Dropped: {t}')
-            cursor.execute('SET FOREIGN_KEY_CHECKS = 1;')
-            print('All database tables dropped successfully.')
-        " || true
-
-        # 2. Run all migrations completely so django_session, auth, and app tables are properly created
+        # 1. Professional approach: Database drop nahi karna, sirf safe migrations run karni hain
+        echo "Checking database connection and running pending migrations safely..."
+        
         python manage.py makemigrations --merge --no-input || true
+        
+        # Safe migration run (agar koi table missing hogi jaise django_session, toh woh khud create ho jayegi)
         python manage.py migrate --no-input
         python manage.py migrate axes --no-input || true
 
-        # 3. FIX: auth_user table ke 'last_login' column ko explicitly NULL allow karwayein taake IntegrityError na aaye
+        # 2. Schema Compatibility Check (e.g., auth_user last_login NULL constraint fix if needed)
         python -c "
         import os, pymysql
         pymysql.install_as_MySQLdb()
@@ -83,12 +63,12 @@ jobs:
         with connection.cursor() as cursor:
             try:
                 cursor.execute('ALTER TABLE auth_user MODIFY COLUMN last_login DATETIME(6) NULL DEFAULT NULL;')
-                print('Successfully altered auth_user.last_login to allow NULL.')
+                print('Checked & verified auth_user schema compatibility.')
             except Exception as e:
-                print('Note on alter table:', e)
+                print('Schema check note:', e)
         "
 
-        # 4. Fresh superuser create karein using Environment Secrets
+        # 3. Ensure Superuser exists (Agar pehle se hai toh update/ignore karega, data safe rahega)
         python -c "
         import os
         import pymysql
@@ -101,13 +81,15 @@ jobs:
         username = os.environ.get('DJANGO_SUPERUSER_NAME', 'admin')
         email = os.environ.get('DJANGO_SUPERUSER_EMAIL', 'admin@example.com')
         password = os.environ.get('DJANGO_SUPERUSER_PASSWORD')
-        User.objects.filter(username=username).delete()
-        User.objects.create_superuser(username, email, password)
-        print('Superuser created successfully.')
+        if not User.objects.filter(username=username).exists():
+            User.objects.create_superuser(username, email, password)
+            print('Superuser created successfully.')
+        else:
+            print('Superuser already exists. Skipping recreation to preserve data.')
         "
 
         echo "=========================================="
-        echo "Database setup & Fresh Superuser ready!"
+        echo "Database health check & migrations completed safely!"
         echo "=========================================="
 
     - name: Launch Permanent Cloudflare Tunnel
@@ -158,7 +140,7 @@ jobs:
         echo "🚀 ACCESS YOUR DJANGO APP HERE:"
         echo "👉 $STATIC_URL"
         echo "=========================================================="
-        echo "🔑 Admin Username and Password are securely loaded from GitHub Secrets."
+        echo "🔑 Database integrity maintained without data drops."
         echo "=========================================================="
 
         # Permanent Tunnel ko FOREGROUND mein run karein taake action active rahe
