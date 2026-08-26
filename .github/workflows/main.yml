@@ -43,25 +43,21 @@ jobs:
         DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
-        # 1. MySQL database ki sari tables ko safely drop kar ke bilkul fresh state bana dein
+        # 1. Safely drop all tables in MySQL database using a clean Python script
         python manage.py shell -c "
         from django.db import connection
         with connection.cursor() as cursor:
             cursor.execute('SET FOREIGN_KEY_CHECKS = 0;')
             cursor.execute('SHOW TABLES;')
-            tables = cursor.fetchall()
-            for table in tables:
-                table_name = table[0]
-                try:
-                    cursor.execute(f'DROP TABLE IF EXISTS `{table_name}`;')
-                    print(f'Dropped table: {table_name}')
-                except Exception as e:
-                    print(f'Error dropping {table_name}: {e}')
+            tables = [row[0] for row in cursor.fetchall()]
+            for t in tables:
+                cursor.execute(f'DROP TABLE IF EXISTS \`{t}\`;')
+                print(f'Dropped: {t}')
             cursor.execute('SET FOREIGN_KEY_CHECKS = 1;')
-            print('Database wiped successfully.')
+            print('All database tables dropped successfully.')
         " || true
 
-        # 2. Fresh migrations run karein
+        # 2. Run migrations fresh
         python manage.py makemigrations --merge --no-input || true
         python manage.py migrate
 
