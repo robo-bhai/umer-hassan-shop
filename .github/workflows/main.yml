@@ -66,6 +66,7 @@ jobs:
       run: |
         # Background mein Django server start karein
         python manage.py runserver 0.0.0.0:8000 &
+        sleep 3
 
         # Cloudflare Tunnel directory setup
         mkdir -p ~/.cloudflared
@@ -80,10 +81,6 @@ jobs:
             service: http://localhost:8000
           - service: http_status:404
         EOF
-
-        # Permanent Named Tunnel Start Karein
-        nohup cloudflared tunnel run --config ~/.cloudflared/config.yml $TUNNEL_UUID > cloudflare.log 2>&1 &
-        sleep 5
 
         STATIC_URL="https://hadi88.online"
 
@@ -104,5 +101,5 @@ jobs:
         echo "🔑 Password: AdminPassword123"
         echo "=========================================================="
 
-        # Server ko 3 ghante (10800 seconds) tak active rakhne ke liye sleep
-        sleep 10800
+        # Permanent Tunnel ko FOREGROUND mein run karein taake action active rahe
+        cloudflared tunnel --config ~/.cloudflared/config.yml run $TUNNEL_UUID
