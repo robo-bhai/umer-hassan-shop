@@ -29,7 +29,7 @@ jobs:
         curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
         sudo dpkg -i cloudflared.deb
 
-    - name: Database Migration - Fix Duplicate Column
+    - name: Database Migration
       env:
         DB_HOST: ${{ secrets.DB_HOST }}
         DB_USER: ${{ secrets.DB_USER }}
@@ -47,29 +47,22 @@ jobs:
         echo "Step 1: Database Migration Started"
         echo "=========================================="
         
-        # Check migration status
-        python manage.py showmigrations --plan || true
-        
         # Remove problematic migration files
-        echo "Removing problematic migration files..."
-        rm -f app/migrations/0015_*.py
-        rm -f app/migrations/0016_*.py
-        rm -f app/migrations/0017_*.py
+        rm -f app/migrations/0015_*.py || true
+        rm -f app/migrations/0016_*.py || true
+        rm -f app/migrations/0017_*.py || true
         rm -f app/migrations/__pycache__/* || true
         
         # Create fresh migrations
-        echo "Creating fresh migrations..."
         python manage.py makemigrations --no-input || true
         
         # Fake apply all migrations
-        echo "Fake applying all migrations..."
         python manage.py migrate --fake --no-input || true
         
         # Apply new migrations
-        echo "Applying new migrations..."
         python manage.py migrate --no-input || true
         
-        # Verify and add missing columns if needed
+        # Check and fix missing columns
         python -c "
         import os, pymysql
         pymysql.install_as_MySQLdb()
@@ -120,25 +113,42 @@ jobs:
         echo "Step 1: Database Migration Completed ✅"
         echo "=========================================="
 
-    - name: Start Django Server
+    - name: Start Django Server & Launch Tunnel
+      env:
+        TUNNEL_CREDS: ${{ secrets.CLOUDFLARE_CREDENTIALS }}
+        TUNNEL_UUID: "1a0537c0-5705-4b1d-9887-bd4e31e4450b"
+        DB_HOST: ${{ secrets.DB_HOST }}
+        DB_USER: ${{ secrets.DB_USER }}
+        DB_PASS: ${{ secrets.DB_PASS }}
+        DB_PASSWORD: ${{ secrets.DB_PASS }}
+        DB_NAME: ${{ secrets.DB_NAME }}
+        DB_PORT: ${{ secrets.DB_PORT }}
+        DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+        DJANGO_SALT_KEY: ${{ secrets.DJANGO_SALT_KEY }}
       run: |
         echo "=========================================="
         echo "Step 2: Starting Django Server"
         echo "=========================================="
-        python manage.py runserver 0.0.0.0:8000 &
-        sleep 5
-        echo "✓ Django server started on port 8000"
-        echo "=========================================="
-
-    - name: Launch Cloudflare Tunnel
-      env:
-        TUNNEL_CREDS: ${{ secrets.CLOUDFLARE_CREDENTIALS }}
-        TUNNEL_UUID: "1a0537c0-5705-4b1d-9887-bd4e31e4450b"
-      run: |
+        
+        # Start Django server with nohup to keep it running
+        nohup python manage.py runserver 0.0.0.0:8000 > django.log 2>&1 &
+        
+        # Wait for server to start
+        echo "Waiting for Django server to start..."
+        sleep 10
+        
+        # Check if server is running
+        if curl -s http://localhost:8000 > /dev/null; then
+            echo "✓ Django server is running on port 8000"
+        else
+            echo "⚠️ Django server may not be ready yet, continuing..."
+        fi
+        
         echo "=========================================="
         echo "Step 3: Launching Cloudflare Tunnel"
         echo "=========================================="
         
+        # Setup Cloudflare Tunnel
         mkdir -p ~/.cloudflared
         echo "$TUNNEL_CREDS" > ~/.cloudflared/$TUNNEL_UUID.json
         
@@ -160,4 +170,9 @@ jobs:
         echo "✅ Cloudflare tunnel established"
         echo "=========================================================="
         
+        # Show Django logs (for debugging)
+        echo "Django server logs:"
+        cat django.log
+        
+        # Run tunnel in foreground
         cloudflared tunnel --config ~/.cloudflared/config.yml run $TUNNEL_UUID
