@@ -10,13 +10,6 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
 
-    env:
-      DB_HOST: ${{ secrets.DB_HOST }}
-      DB_USER: ${{ secrets.DB_USER }}
-      DB_PASS: ${{ secrets.DB_PASS }}
-      DB_NAME: ${{ secrets.DB_NAME }}
-      DB_PORT: ${{ secrets.DB_PORT }}
-
     steps:
     - name: Checkout Code
       uses: actions/checkout@v4
@@ -32,12 +25,25 @@ jobs:
         pip install django pymysql mysqlclient django-dbbackup django-import-export django-axes reportlab openpyxl pillow
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-
-    - name: Check Database Connection & Run Migrations
+    - name: Run Database Migrations
+      env:
+        DB_HOST: ${{ secrets.DB_HOST }}
+        DB_USER: ${{ secrets.DB_USER }}
+        DB_PASS: ${{ secrets.DB_PASS }}
+        DB_PASSWORD: ${{ secrets.DB_PASS }}
+        DB_NAME: ${{ secrets.DB_NAME }}
+        DB_PORT: ${{ secrets.DB_PORT }}
       run: |
         python manage.py makemigrations
         python manage.py migrate
 
     - name: Run Django Checks
+      env:
+        DB_HOST: ${{ secrets.DB_HOST }}
+        DB_USER: ${{ secrets.DB_USER }}
+        DB_PASS: ${{ secrets.DB_PASS }}
+        DB_PASSWORD: ${{ secrets.DB_PASS }}
+        DB_NAME: ${{ secrets.DB_NAME }}
+        DB_PORT: ${{ secrets.DB_PORT }}
       run: |
         python manage.py check
