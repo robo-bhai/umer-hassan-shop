@@ -43,26 +43,20 @@ jobs:
         DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
-        # 1. Migration conflicts ko automatically merge karne ki koshish karein
-        python manage.py makemigrations --merge --no-input || true
-        python manage.py makemigrations --no-input || true
+        # 1. Sabse pehle Django migrations ka table clear kar dein taaki history conflict khatam ho jaye
+        python manage.py shell -c "
+        from django.db import connection
+        with connection.cursor() as cursor:
+            try:
+                cursor.execute('DROP TABLE IF EXISTS django_migrations;')
+                print('Dropped django_migrations table successfully.')
+            except Exception as e:
+                print('Error dropping table:', e)
+        " || true
 
-        # 2. Database migration with robust fallback handling
-        if python manage.py migrate; then
-            echo "✅ Database migrated successfully without errors!"
-        else
-            echo "⚠️ Migration failed due to conflict/missing tables! Forcing merge and retry..."
-            python manage.py makemigrations --merge --no-input || true
-            python manage.py migrate --fake-initial || true
-            if python manage.py migrate; then
-                echo "✅ Database migrated successfully after resolving conflicts!"
-            else
-                echo "⚠️ Migration still failed! Flushing database completely and re-running..."
-                python manage.py flush --no-input || true
-                python manage.py migrate --run-syncdb
-                python manage.py migrate
-            fi
-        fi
+        # 2. Fresh migrations run karein bina kisi inconsistency ke
+        python manage.py makemigrations --merge --no-input || true
+        python manage.py migrate --run-syncdb
 
         # 3. Fresh superuser create karein using Environment Secrets
         python manage.py shell -c "
