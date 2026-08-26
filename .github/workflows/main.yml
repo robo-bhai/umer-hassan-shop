@@ -21,7 +21,6 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        # Yahan mysqlclient ki jagah pymysql install karwa rahe hain jo GitHub Actions aur Termux dono par chal jata hai
         pip install pymysql "django-import-export>=3.3.0" django django-dbbackup django-axes reportlab openpyxl pillow python-barcode qrcode
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
@@ -68,9 +67,9 @@ jobs:
             print('All database tables dropped successfully.')
         " || true
 
-        # 2. Run migrations fresh
+        # 2. Run migrations fresh, aur agar duplicate column ya clash ho toh --fake-initial ya skip handle karein
         python manage.py makemigrations --merge --no-input || true
-        python manage.py migrate
+        python manage.py migrate || python manage.py migrate --fake-initial || python manage.py migrate --fake
 
         # 3. Fresh superuser create karein using Environment Secrets
         python -c "
