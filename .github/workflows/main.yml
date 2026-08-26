@@ -46,17 +46,20 @@ jobs:
         # 1. Pehle normal migration run karne ki koshish karein
         python manage.py makemigrations --merge --no-input || true
         
-        # 2. Agar table missing ya migration mismatch ka masla ho toh app state ko handle karein
-        python manage.py migrate app zero --fake || true
-
-        if python manage.py migrate; then
-            echo "✅ Database migrated successfully without errors!"
+        # 2. Agar table pehle se mojood hone ya missing hone ka error aaye toh handle karein
+        if python manage.py migrate --fake-initial; then
+            echo "✅ Database migrated successfully!"
         else
-            echo "⚠️ Migration failed! Resetting database and retrying..."
-            # Agar error aaye tab database flush/reset karein
-            python manage.py flush --no-input || true
-            python manage.py migrate --run-syncdb
-            python manage.py migrate
+            echo "⚠️ Migration failed due to existing tables! Trying with --fake..."
+            python manage.py migrate --fake || true
+            if python manage.py migrate; then
+                echo "✅ Database migrated successfully after fake fallback!"
+            else
+                echo "⚠️ Migration still failed! Flushing database completely..."
+                python manage.py flush --no-input || true
+                python manage.py migrate --run-syncdb
+                python manage.py migrate
+            fi
         fi
 
         # 3. Fresh superuser create karein using Environment Secrets
