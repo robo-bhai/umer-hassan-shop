@@ -43,13 +43,10 @@ jobs:
         DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
-        # 1. Database ka tamam existing data flush karein
-        python manage.py flush --no-input
+        # Duplicate entry error se bachne ke liye flush ki bajaye migrate --fake-initial use karein
+        python manage.py migrate --fake-initial
 
-        # 2. Fresh migrations apply karein
-        python manage.py migrate
-
-        # 3. Fresh superuser create karein using Environment Secrets
+        # Fresh superuser create karein using Environment Secrets
         python manage.py shell -c "
         import os
         from django.contrib.auth import get_user_model
@@ -62,7 +59,7 @@ jobs:
         "
 
         echo "=========================================="
-        echo "Fresh Superuser created successfully from Secrets!"
+        echo "Database migrated & Fresh Superuser created successfully from Secrets!"
         echo "=========================================="
 
     - name: Launch Permanent Cloudflare Tunnel
@@ -76,6 +73,8 @@ jobs:
         DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
         DJANGO_SALT_KEY: ${{ secrets.DJANGO_SALT_KEY }}
         DJANGO_SUPERUSER_NAME: ${{ secrets.DJANGO_SUPERUSER_NAME }}
+        DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
+        DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
         TUNNEL_CREDS: ${{ secrets.CLOUDFLARE_CREDENTIALS }}
         TUNNEL_UUID: "1a0537c0-5705-4b1d-9887-bd4e31e4450b"
       run: |
