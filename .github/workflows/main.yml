@@ -21,7 +21,7 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install "django-import-export>=3.3.0" django pymysql mysqlclient django-dbbackup django-axes reportlab openpyxl pillow python-barcode
+        pip install "django-import-export>=3.3.0" django pymysql mysqlclient django-dbbackup django-axes reportlab openpyxl pillow python-barcode qrcode
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
     - name: Install Cloudflared
