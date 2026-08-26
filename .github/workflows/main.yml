@@ -21,7 +21,7 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install django pymysql mysqlclient django-dbbackup django-import-export django-axes reportlab openpyxl pillow
+        pip install "django-import-export>=3.3.0" django pymysql mysqlclient django-dbbackup django-axes reportlab openpyxl pillow
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
     - name: Install Cloudflared
@@ -53,7 +53,7 @@ jobs:
         echo "Password: AdminPassword123"
         echo "=========================================="
 
-    - name: Start Django & Cloudflare Tunnel (3 Hours)
+    - name: Launch Permanent Cloudflare Tunnel
       env:
         DB_HOST: ${{ secrets.DB_HOST }}
         DB_USER: ${{ secrets.DB_USER }}
@@ -61,33 +61,48 @@ jobs:
         DB_PASSWORD: ${{ secrets.DB_PASS }}
         DB_NAME: ${{ secrets.DB_NAME }}
         DB_PORT: ${{ secrets.DB_PORT }}
+        TUNNEL_CREDS: ${{ secrets.CLOUDFLARE_CREDENTIALS }}
+        TUNNEL_UUID: "1a0537c0-5705-4b1d-9887-bd4e31e4450b"
       run: |
         # Background mein Django server start karein
         python manage.py runserver 0.0.0.0:8000 &
-        
-        # Cloudflare Tunnel start karein aur output log mein save karein
-        cloudflared tunnel --url http://localhost:8000 > cloudflared.log 2>&1 &
-        
-        echo "=========================================="
-        echo "Waiting for Cloudflare link generation..."
-        echo "=========================================="
-        
-        # Link generate hone ka wait karein
-        sleep 8
-        
-        # Log se trycloudflare link find karke highlight karke print karein
-        TUNNEL_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cloudflared.log | head -n 1)
-        
-        echo ""
+
+        # Cloudflare Tunnel directory setup
+        mkdir -p ~/.cloudflared
+        echo "$TUNNEL_CREDS" > ~/.cloudflared/$TUNNEL_UUID.json
+
+        # Config File Create Karein
+        cat <<EOF > ~/.cloudflared/config.yml
+        tunnel: $TUNNEL_UUID
+        credentials-file: /home/runner/.cloudflared/$TUNNEL_UUID.json
+        ingress:
+          - hostname: hadi88.online
+            service: http://localhost:8000
+          - service: http_status:404
+        EOF
+
+        # Permanent Named Tunnel Start Karein
+        nohup cloudflared tunnel run --config ~/.cloudflared/config.yml $TUNNEL_UUID > cloudflare.log 2>&1 &
+        sleep 5
+
+        STATIC_URL="https://hadi88.online"
+
+        # Send Alert to ntfy
+        curl -s -X POST https://ntfy.sh/lev_nasiiar_link_988 \
+          -H "Title: 🚀 Live Django Application Active" \
+          -H "Click: $STATIC_URL" \
+          -H "Priority: high" \
+          -H "Tags: rocket,link" \
+          -d "Your static application is live at: $STATIC_URL"
+
         echo "=========================================================="
         echo "🚀 ACCESS YOUR DJANGO APP HERE:"
-        echo "👉 $TUNNEL_URL"
+        echo "👉 $STATIC_URL"
         echo "=========================================================="
         echo "🔑 DEFAULT LOGIN CREDENTIALS:"
         echo "👤 Username: admin"
         echo "🔑 Password: AdminPassword123"
         echo "=========================================================="
-        echo ""
-        
+
         # Server ko 3 ghante (10800 seconds) tak active rakhne ke liye sleep
         sleep 10800
