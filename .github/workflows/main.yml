@@ -21,7 +21,8 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install "django-import-export>=3.3.0" django pymysql mysqlclient django-dbbackup django-axes reportlab openpyxl pillow python-barcode qrcode
+        # Yahan mysqlclient ki jagah pymysql install karwa rahe hain jo GitHub Actions aur Termux dono par chal jata hai
+        pip install pymysql "django-import-export>=3.3.0" django django-dbbackup django-axes reportlab openpyxl pillow python-barcode qrcode
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
     - name: Install Cloudflared
@@ -43,8 +44,18 @@ jobs:
         DJANGO_SUPERUSER_EMAIL: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
-        # 1. Safely drop all tables in MySQL database using a clean Python script
-        python manage.py shell -c "
+        # 1. Safely drop all tables in Aiven MySQL database using a clean Python snippet with PyMySQL
+        python -c "
+        import os
+        import pymysql
+        pymysql.install_as_MySQLdb()
+        from django.db.backends.mysql import base as mysql_base
+        mysql_base.versioncheck = lambda *args, **kwargs: True
+
+        import django
+        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
+        django.setup()
+
         from django.db import connection
         with connection.cursor() as cursor:
             cursor.execute('SET FOREIGN_KEY_CHECKS = 0;')
@@ -62,8 +73,13 @@ jobs:
         python manage.py migrate
 
         # 3. Fresh superuser create karein using Environment Secrets
-        python manage.py shell -c "
+        python -c "
         import os
+        import pymysql
+        pymysql.install_as_MySQLdb()
+        import django
+        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
+        django.setup()
         from django.contrib.auth import get_user_model
         User = get_user_model()
         username = os.environ.get('DJANGO_SUPERUSER_NAME', 'admin')
@@ -71,6 +87,7 @@ jobs:
         password = os.environ.get('DJANGO_SUPERUSER_PASSWORD')
         User.objects.filter(username=username).delete()
         User.objects.create_superuser(username, email, password)
+        print('Superuser created successfully.')
         "
 
         echo "=========================================="
