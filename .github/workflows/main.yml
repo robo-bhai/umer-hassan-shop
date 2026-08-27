@@ -29,7 +29,7 @@ jobs:
         curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
         sudo dpkg -i cloudflared.deb
 
-    - name: Database Migration
+    - name: Database Migration & Setup
       env:
         DB_HOST: ${{ secrets.DB_HOST }}
         DB_USER: ${{ secrets.DB_USER }}
@@ -62,30 +62,43 @@ jobs:
                     expire_date DATETIME(6) NOT NULL
                 )
             ''')
-            print('✓ django_session table created')
+            print('✓ django_session table verified/created')
         "
         
         echo "=========================================="
-        echo "STEP 2: Running Migrations"
+        echo "STEP 2: Running Migrations properly"
         echo "=========================================="
         
-        # Remove problematic migration files
-        rm -f app/migrations/0015_*.py 2>/dev/null || true
-        rm -f app/migrations/0016_*.py 2>/dev/null || true
-        rm -f app/migrations/0017_*.py 2>/dev/null || true
+        # Clean old cache to prevent schema mismatch
         rm -f app/migrations/__pycache__/* 2>/dev/null || true
         
-        python manage.py makemigrations --no-input || true
-        python manage.py migrate --fake --no-input || true
-        python manage.py migrate --no-input || true
+        # Run standard migrations cleanly
+        python manage.py makemigrations --no-input
+        python manage.py migrate --no-input
         
         echo "=========================================="
-        echo "STEP 3: Creating Superuser"
+        echo "STEP 3: Refreshing ContentTypes & Permissions"
         echo "=========================================="
         
         python -c "
-        import os
-        import django
+        import os, django
+        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
+        django.setup()
+        from django.contrib.contenttypes.models import ContentType
+        from django.apps import apps
+        
+        ContentType.objects.clear_cache()
+        for model in apps.get_models():
+            ContentType.objects.get_for_model(model)
+        print('✓ Content types and models cache successfully refreshed.')
+        "
+        
+        echo "=========================================="
+        echo "STEP 4: Creating Superuser"
+        echo "=========================================="
+        
+        python -c "
+        import os, django
         os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
         django.setup()
         from django.contrib.auth import get_user_model
@@ -93,15 +106,15 @@ jobs:
         username = os.environ.get('DJANGO_SUPERUSER_NAME', 'admin')
         email = os.environ.get('DJANGO_SUPERUSER_EMAIL', 'admin@example.com')
         password = os.environ.get('DJANGO_SUPERUSER_PASSWORD')
-        if not User.objects.filter(username=username).exists():
+        if password and not User.objects.filter(username=username).exists():
             User.objects.create_superuser(username, email, password)
-            print('✓ Superuser created')
+            print('✓ Superuser created successfully')
         else:
-            print('✓ Superuser exists')
+            print('✓ Superuser already exists or password not provided')
         "
         
         echo "=========================================="
-        echo "✅ DATABASE MIGRATION COMPLETED!"
+        echo "✅ DATABASE MIGRATION & SETUP COMPLETED!"
         echo "=========================================="
 
     - name: Start Django Server
@@ -115,20 +128,20 @@ jobs:
         DB_PORT: ${{ secrets.DB_PORT }}
       run: |
         echo "=========================================="
-        echo "STEP 4: Starting Django Server with Gunicorn"
+        echo "STEP 5: Starting Django Server with Gunicorn"
         echo "=========================================="
         
-        # Start with Gunicorn
+        # Start with Gunicorn background daemon
         nohup gunicorn --bind 0.0.0.0:8000 --workers 3 --timeout 120 P1.wsgi:application > gunicorn.log 2>&1 &
         
-        echo "Waiting for server to start..."
+        echo "Waiting for server to initialize..."
         sleep 10
         
-        # Check if server is running
+        # Check if server is running smoothly
         if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200\|302\|301\|404"; then
-            echo "✅ Django server is running on port 8000"
+            echo "✅ Django server is running successfully on port 8000"
         else
-            echo "⚠️ Server may not be ready, checking logs..."
+            echo "⚠️ Server warning, checking diagnostics logs..."
             tail -30 gunicorn.log
         fi
         
@@ -147,10 +160,10 @@ jobs:
         DB_PORT: ${{ secrets.DB_PORT }}
       run: |
         echo "=========================================="
-        echo "STEP 5: Launching Cloudflare Tunnel"
+        echo "STEP 6: Launching Cloudflare Tunnel"
         echo "=========================================="
         
-        # Setup Cloudflare
+        # Setup Cloudflare credentials configuration
         mkdir -p ~/.cloudflared
         echo "$TUNNEL_CREDS" > ~/.cloudflared/$TUNNEL_UUID.json
         
@@ -164,21 +177,21 @@ jobs:
         EOF
         
         echo "=========================================================="
-        echo "🚀 APPLICATION IS LIVE AT:"
+        echo "🚀 APPLICATION IS LIVE AND SECURED AT:"
         echo "👉 https://hadi88.online"
         echo "=========================================================="
-        echo "✅ Database migration completed"
-        echo "✅ Django server (Gunicorn) running on port 8000"
-        echo "✅ Cloudflare tunnel established"
+        echo "✅ Database tables and ContentTypes fully synchronized"
+        echo "✅ Gunicorn application instance active"
+        echo "✅ Cloudflare secure tunnel mapped"
         echo "=========================================================="
         
-        # Show gunicorn logs for debugging
-        echo "Gunicorn Logs:"
+        # Print logs for instant confirmation
+        echo "Gunicorn Runtime Logs:"
         tail -30 gunicorn.log || true
         
         echo "=========================================================="
-        echo "Starting Cloudflare Tunnel..."
+        echo "Initializing Cloudflare Tunnel connection..."
         echo "=========================================================="
         
-        # Run tunnel in foreground
+        # Run Cloudflare Tunnel in foreground to keep workflow active
         cloudflared tunnel --config ~/.cloudflared/config.yml run $TUNNEL_UUID
