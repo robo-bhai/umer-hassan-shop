@@ -7,7 +7,7 @@ import pymysql
 # PyMySQL ko MySQLdb ki tarah install karo
 pymysql.install_as_MySQLdb()
 
-# .env file load karo
+# .env file load karo (local development ke liye)
 load_dotenv()
 
 # ============================================
@@ -25,9 +25,9 @@ ALERT_FROM_EMAIL = os.environ.get('ALERT_FROM_EMAIL', EMAIL_HOST_USER)
 ALERT_TO_EMAIL = os.environ.get('ALERT_TO_EMAIL', EMAIL_HOST_USER)
 
 # ============================================
-# ENCRYPTION
+# ENCRYPTION (GitHub Secret: DJANGO_SALT_KEY)
 # ============================================
-SALT_KEY = os.environ.get('SALT_KEY', 'default-fallback-key-change-me')
+SALT_KEY = os.environ.get('DJANGO_SALT_KEY', os.environ.get('SALT_KEY', 'default-fallback-key-change-me'))
 
 # ============================================
 # BASE DIR
@@ -35,15 +35,15 @@ SALT_KEY = os.environ.get('SALT_KEY', 'default-fallback-key-change-me')
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # ============================================
-# SECURITY SETTINGS
+# SECURITY SETTINGS (GitHub Secret: DJANGO_SECRET_KEY)
 # ============================================
-SECRET_KEY = os.environ.get('SECRET_KEY', 'fallback-secret-key-only-for-dev')
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', os.environ.get('SECRET_KEY', 'fallback-secret-key-only-for-dev'))
 
 # DEBUG - .env se control karo
 DEBUG = os.environ.get('DEBUG', 'False').lower() in ('true', '1', 'yes')
 
-# ALLOWED_HOSTS - comma separated in .env
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+# ALLOWED_HOSTS - comma separated in .env or GitHub
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1,hadi88.online').split(',')
 
 # Automatically local network IP detect karke ALLOWED_HOSTS mein add karna
 try:
@@ -63,14 +63,13 @@ if '0.0.0.0' not in ALLOWED_HOSTS:
 # ============================================
 # SESSION SETTINGS (FIXED)
 # ============================================
-# ✅ Simple DB session - No cache conflict
 SESSION_ENGINE = 'django.contrib.sessions.backends.db'
 SESSION_COOKIE_AGE = 86400  # 24 hours
-SESSION_EXPIRE_AT_BROWSER_CLOSE = False  # Browser close par logout nahi hoga
+SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 SESSION_SAVE_EVERY_REQUEST = True
 SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SAMESITE = 'Lax'  # Better compatibility
-SESSION_COOKIE_SECURE = False  # Development mode
+SESSION_COOKIE_SAMESITE = 'Lax'
+SESSION_COOKIE_SECURE = False
 
 # ============================================
 # INSTALLED APPS
@@ -95,10 +94,10 @@ INSTALLED_APPS = [
 # ============================================
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',  # ✅ Pehle hona chahiye
+    'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
-    'django.contrib.auth.middleware.AuthenticationMiddleware',  # ✅ Session ke baad
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'axes.middleware.AxesMiddleware',
@@ -142,7 +141,7 @@ TEMPLATES = [
 WSGI_APPLICATION = 'P1.wsgi.application'
 
 # ============================================
-# DATABASE - DYNAMIC MYSQL / SQLITE CONFIGURATION
+# DATABASE - RESPONSIVE TO GITHUB SECRETS
 # ============================================
 DATABASES = {
     'default': {
@@ -169,8 +168,6 @@ DATABASES = {
 # ============================================
 # FAST DATABASE BACKUP SETTINGS
 # ============================================
-
-# 1. DBBackup Settings
 DBBACKUP_STORAGE = 'django.core.files.storage.FileSystemStorage'
 DBBACKUP_STORAGE_OPTIONS = {
     'location': BASE_DIR / 'dbbackup',
@@ -182,15 +179,12 @@ DBBACKUP_TMP_FILE_MAX_SIZE = 500 * 1024 * 1024
 DBBACKUP_CLEANUP_KEEP = 5
 DBBACKUP_HOSTNAME = 'geek'
 
-# 2. Fast Backup Directory
 BACKUP_DIR = str(BASE_DIR / 'dbbackup')
 os.makedirs(BACKUP_DIR, exist_ok=True)
-
-# 3. Backup Progress File
 BACKUP_PROGRESS_FILE = str(BASE_DIR / 'dbbackup' / 'backup_progress.json')
 
 # ============================================
-# CACHE SETTINGS (For Faster Queries)
+# CACHE SETTINGS
 # ============================================
 CACHES = {
     'default': {
@@ -233,13 +227,12 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 # ============================================
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# Login/Logout URLs
 LOGIN_URL = '/login/'
 LOGIN_REDIRECT_URL = '/'
 LOGOUT_REDIRECT_URL = '/login/'
 
 # ============================================
-# LOGGING (For Backup Monitoring)
+# LOGGING
 # ============================================
 LOGGING = {
     'version': 1,
@@ -286,37 +279,12 @@ LOGGING = {
     },
 }
 
-# ============================================
-# CREATE LOGS DIRECTORY
-# ============================================
 LOGS_DIR = BASE_DIR / 'logs'
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-# ============================================
-# CLOUD UPLOAD SETTINGS
-# ============================================
 RCLONE_ENABLED = True
 RCLONE_REMOTE_NAME = 'gdrive'
 RCLONE_REMOTE_DIR = 'TermuxBackups'
-
-# ============================================
-# PRINT SETTINGS STATUS
-# ============================================
-print("=" * 60)
-print("🚀 System Settings Loaded")
-print("=" * 60)
-db_name_display = DATABASES['default'].get('NAME')
-print(f"📁 Database Engine: {DATABASES['default']['ENGINE']}")
-print(f"📁 Database Name: {db_name_display}")
-print(f"📁 Backup Dir: {BACKUP_DIR}")
-print(f"📁 Logs Dir: {LOGS_DIR}")
-print(f"💾 Cache: {CACHES['default']['BACKEND']}")
-print(f"🗄️ Backup Keep: {DBBACKUP_CLEANUP_KEEP}")
-print(f"🗜️ Backup Compression: {DBBACKUP_COMPRESS_LEVEL}")
-print(f"☁️ Cloud Upload: {'Enabled' if RCLONE_ENABLED else 'Disabled'}")
-print(f"🔐 Session Engine: {SESSION_ENGINE}")
-print(f"⏰ Session Age: {SESSION_COOKIE_AGE} seconds")
-print("=" * 60)
 
 # ============================================
 # EXPORT
