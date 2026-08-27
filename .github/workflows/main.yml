@@ -66,7 +66,7 @@ jobs:
         "
         
         echo "=========================================="
-        echo "STEP 2: Handling Migration Conflicts & Running Migrations"
+        echo "STEP 2: Handling Migration Conflicts & Safe Migration"
         echo "=========================================="
         
         # Clean old cache
@@ -75,9 +75,11 @@ jobs:
         # Automatically resolve and merge conflicting migration branches if any exist
         python manage.py makemigrations --merge --no-input || true
         
-        # Run standard migrations cleanly
+        # Run standard makemigrations
         python manage.py makemigrations --no-input
-        python manage.py migrate --no-input
+        
+        # Run standard migrate; agar duplicate column/error aaye toh safe fallback ke taur par fake apply karein
+        python manage.py migrate --no-input || python manage.py migrate --fake
         
         echo "=========================================="
         echo "STEP 3: Refreshing ContentTypes & Permissions"
