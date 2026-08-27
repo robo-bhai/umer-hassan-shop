@@ -43,10 +43,10 @@ jobs:
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
         echo "=========================================="
-        echo "STEP 1: Bulletproof Database Clean & Migrate"
+        echo "STEP 1: Complete Hard Reset of Database & Migrations"
         echo "=========================================="
         
-        # Safely drop tables with strict error handling and validation
+        # Hard drop all tables and migration history cleanly
         python -c "import os, pymysql; pymysql.install_as_MySQLdb(); import django; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings'); django.setup(); from django.db import connection; 
         try:
             with connection.cursor() as cursor:
@@ -60,14 +60,14 @@ jobs:
                             if table_name:
                                 cursor.execute(f'DROP TABLE IF EXISTS `{table_name}`;')
                 cursor.execute('SET FOREIGN_KEY_CHECKS = 1;')
-            print('✓ Database cleaned successfully.')
+            print('✓ All remote database tables and history completely wiped.')
         except Exception as e:
-            print(f'Note during cleanup (can be ignored if fresh): {e}')"
+            print(f'Note during complete cleanup: {e}')"
         
-        # Clean old migration cache files
-        rm -f app/migrations/__pycache__/* 2>/dev/null || true
+        # Clean local migration pycache files
+        rm -rf app/migrations/__pycache__ 2>/dev/null || true
         
-        # Run fresh migrations
+        # Run fresh migrations from scratch
         python manage.py makemigrations --merge --no-input || true
         python manage.py makemigrations --no-input
         python manage.py migrate --no-input
