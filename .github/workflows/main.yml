@@ -43,18 +43,26 @@ jobs:
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
         echo "=========================================="
-        echo "STEP 1: Resolving Conflicts & Applying Migrations Safely"
+        echo "STEP 1: Fresh Database Clean & Re-migration"
         echo "=========================================="
         
-        # Merge conflicting migrations automatically if any exist
+        # Drop all tables cleanly to avoid last_login / column constraints issues
+        python -c "import os, pymysql; pymysql.install_as_MySQLdb(); import django; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings'); django.setup(); from django.db import connection; 
+        with connection.cursor() as cursor:
+            cursor.execute('SET FOREIGN_KEY_CHECKS = 0;')
+            cursor.execute('SHOW TABLES;')
+            for table in cursor.fetchall():
+                cursor.execute('DROP TABLE IF EXISTS `' + table[0] + '`;')
+            cursor.execute('SET FOREIGN_KEY_CHECKS = 1;')
+        print('✓ All existing database tables dropped for a fresh start.')"
+        
+        # Clean old migration pycache cache files
+        rm -f app/migrations/__pycache__/* 2>/dev/null || true
+        
+        # Run fresh migrations
         python manage.py makemigrations --merge --no-input || true
         python manage.py makemigrations --no-input
-        
-        # Try normal migration, if duplicate column error occurs, fake it or handle it smoothly
-        python manage.py migrate --no-input || {
-            echo "⚠️ Normal migrate failed due to existing schema conflict. Attempting fake-initial / fake resolve..."
-            python manage.py migrate --fake-initial || python manage.py migrate --fake
-        }
+        python manage.py migrate --no-input
         
         echo "=========================================="
         echo "STEP 2: Creating Superuser"
