@@ -46,24 +46,10 @@ jobs:
         echo "STEP 1: Creating django_session table"
         echo "=========================================="
         
-        python -c "
-        import os, pymysql
-        pymysql.install_as_MySQLdb()
-        import django
-        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
-        django.setup()
-        from django.db import connection
-        
+        python -c "import os, pymysql; pymysql.install_as_MySQLdb(); import django; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings'); django.setup(); from django.db import connection; 
         with connection.cursor() as cursor:
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS django_session (
-                    session_key VARCHAR(40) NOT NULL PRIMARY KEY,
-                    session_data LONGTEXT NOT NULL,
-                    expire_date DATETIME(6) NOT NULL
-                )
-            ''')
-            print('✓ django_session table verified/created')
-        "
+            cursor.execute('''CREATE TABLE IF NOT EXISTS django_session (session_key VARCHAR(40) NOT NULL PRIMARY KEY, session_data LONGTEXT NOT NULL, expire_date DATETIME(6) NOT NULL)''')
+        print('✓ django_session table verified/created')"
         
         echo "=========================================="
         echo "STEP 2: Smart Migration & Database Hard Reset Handler"
@@ -81,43 +67,22 @@ jobs:
         else
             echo "⚠️ Migration failed! Executing a clean Database Hard Reset..."
             
-            # Clean Python script to drop all tables properly without shell quoting issues
-            python -c "
-import os, pymysql
-pymysql.install_as_MySQLdb()
-import django
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
-django.setup()
-from django.db import connection
-
-with connection.cursor() as cursor:
-    cursor.execute('SET FOREIGN_KEY_CHECKS = 0;')
-    cursor.execute('SHOW TABLES;')
-    tables = cursor.fetchall()
-    for table in tables:
-        t_name = table[0]
-        cursor.execute('DROP TABLE IF EXISTS `' + t_name + '`;')
-    cursor.execute('SET FOREIGN_KEY_CHECKS = 1;')
-    print('✓ All database tables successfully dropped/cleaned.')
-"
+            # Clean single-line python script to drop all tables properly
+            python -c "import os, pymysql; pymysql.install_as_MySQLdb(); import django; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings'); django.setup(); from django.db import connection; 
+            with connection.cursor() as cursor:
+                cursor.execute('SET FOREIGN_KEY_CHECKS = 0;')
+                cursor.execute('SHOW TABLES;')
+                tables = cursor.fetchall()
+                for table in tables:
+                    cursor.execute('DROP TABLE IF EXISTS `' + table[0] + '`;')
+                cursor.execute('SET FOREIGN_KEY_CHECKS = 1;')
+            print('✓ All database tables successfully dropped/cleaned.')"
             
             echo "Running fresh migrations and recreating session table after hard reset..."
-            python -c "
-import os, pymysql
-pymysql.install_as_MySQLdb()
-import django
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
-django.setup()
-from django.db import connection
-with connection.cursor() as cursor:
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS django_session (
-            session_key VARCHAR(40) NOT NULL PRIMARY KEY,
-            session_data LONGTEXT NOT NULL,
-            expire_date DATETIME(6) NOT NULL
-        )
-    ''')
-"
+            python -c "import os, pymysql; pymysql.install_as_MySQLdb(); import django; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings'); django.setup(); from django.db import connection; 
+            with connection.cursor() as cursor:
+                cursor.execute('''CREATE TABLE IF NOT EXISTS django_session (session_key VARCHAR(40) NOT NULL PRIMARY KEY, session_data LONGTEXT NOT NULL, expire_date DATETIME(6) NOT NULL)''')"
+            
             python manage.py makemigrations --no-input
             python manage.py migrate --no-input
         fi
@@ -126,38 +91,21 @@ with connection.cursor() as cursor:
         echo "STEP 3: Refreshing ContentTypes & Permissions"
         echo "=========================================="
         
-        python -c "
-        import os, django
-        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
-        django.setup()
-        from django.contrib.contenttypes.models import ContentType
-        from django.apps import apps
-        
-        ContentType.objects.clear_cache()
+        python -c "import os, django; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings'); django.setup(); from django.contrib.contenttypes.models import ContentType; from django.apps import apps; ContentType.objects.clear_cache(); 
         for model in apps.get_models():
             ContentType.objects.get_for_model(model)
-        print('✓ Content types and models cache successfully refreshed.')
-        "
+        print('✓ Content types and models cache successfully refreshed.')"
         
         echo "=========================================="
         echo "STEP 4: Creating Superuser"
         echo "=========================================="
         
-        python -c "
-        import os, django
-        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
-        django.setup()
-        from django.contrib.auth import get_user_model
-        User = get_user_model()
-        username = os.environ.get('DJANGO_SUPERUSER_NAME', 'admin')
-        email = os.environ.get('DJANGO_SUPERUSER_EMAIL', 'admin@example.com')
-        password = os.environ.get('DJANGO_SUPERUSER_PASSWORD')
+        python -c "import os, django; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings'); django.setup(); from django.contrib.auth import get_user_model; User = get_user_model(); username = os.environ.get('DJANGO_SUPERUSER_NAME', 'admin'); email = os.environ.get('DJANGO_SUPERUSER_EMAIL', 'admin@example.com'); password = os.environ.get('DJANGO_SUPERUSER_PASSWORD'); 
         if password and not User.objects.filter(username=username).exists():
             User.objects.create_superuser(username, email, password)
             print('✓ Superuser created successfully')
         else:
-            print('✓ Superuser already exists or password not provided')
-        "
+            print('✓ Superuser already exists or password not provided')"
         
         echo "=========================================="
         echo "✅ DATABASE MIGRATION & SETUP COMPLETED!"
