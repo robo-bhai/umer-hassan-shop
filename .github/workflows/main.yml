@@ -48,7 +48,7 @@ jobs:
         
         python -c "import os, pymysql; pymysql.install_as_MySQLdb(); import django; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings'); django.setup(); from django.db import connection; 
         with connection.cursor() as cursor:
-            cursor.execute('''CREATE TABLE IF NOT EXISTS django_session (session_key VARCHAR(40) NOT NULL PRIMARY KEY, session_data LONGTEXT NOT NULL, expire_date DATETIME(6) NOT NULL)''')
+            cursor.execute('CREATE TABLE IF NOT EXISTS django_session (session_key VARCHAR(40) NOT NULL PRIMARY KEY, session_data LONGTEXT NOT NULL, expire_date DATETIME(6) NOT NULL)')
         print('✓ django_session table verified/created')"
         
         echo "=========================================="
@@ -65,23 +65,39 @@ jobs:
         if python manage.py migrate --no-input; then
             echo "✅ Database migrations applied successfully without any issues!"
         else
-            echo "⚠️ Migration failed! Executing a clean Database Hard Reset..."
+            echo "⚠️ Migration failed! Executing a clean Database Hard Reset via Python script..."
             
-            # Clean single-line python script to drop all tables properly
-            python -c "import os, pymysql; pymysql.install_as_MySQLdb(); import django; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings'); django.setup(); from django.db import connection; 
-            with connection.cursor() as cursor:
-                cursor.execute('SET FOREIGN_KEY_CHECKS = 0;')
-                cursor.execute('SHOW TABLES;')
-                tables = cursor.fetchall()
-                for table in tables:
-                    cursor.execute('DROP TABLE IF EXISTS `' + table[0] + '`;')
-                cursor.execute('SET FOREIGN_KEY_CHECKS = 1;')
-            print('✓ All database tables successfully dropped/cleaned.')"
+            # Create a standalone python script to avoid any shell escaping or indentation issues
+            cat << 'EOF' > reset_db.py
+import os
+import pymysql
+pymysql.install_as_MySQLdb()
+import django
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings')
+django.setup()
+
+from django.db import connection
+
+with connection.cursor() as cursor:
+    cursor.execute('SET FOREIGN_KEY_CHECKS = 0;')
+    cursor.execute('SHOW TABLES;')
+    tables = cursor.fetchall()
+    for table in tables:
+        t_name = table[0]
+        cursor.execute(f'DROP TABLE IF EXISTS `{t_name}`;')
+    cursor.execute('SET FOREIGN_KEY_CHECKS = 1;')
+
+print('✓ All database tables successfully dropped and cleaned.')
+EOF
+
+            python reset_db.py
+            rm reset_db.py
             
             echo "Running fresh migrations and recreating session table after hard reset..."
             python -c "import os, pymysql; pymysql.install_as_MySQLdb(); import django; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings'); django.setup(); from django.db import connection; 
             with connection.cursor() as cursor:
-                cursor.execute('''CREATE TABLE IF NOT EXISTS django_session (session_key VARCHAR(40) NOT NULL PRIMARY KEY, session_data LONGTEXT NOT NULL, expire_date DATETIME(6) NOT NULL)''')"
+                cursor.execute('CREATE TABLE IF NOT EXISTS django_session (session_key VARCHAR(40) NOT NULL PRIMARY KEY, session_data LONGTEXT NOT NULL, expire_date DATETIME(6) NOT NULL)')"
             
             python manage.py makemigrations --no-input
             python manage.py migrate --no-input
@@ -92,8 +108,7 @@ jobs:
         echo "=========================================="
         
         python -c "import os, django; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings'); django.setup(); from django.contrib.contenttypes.models import ContentType; from django.apps import apps; ContentType.objects.clear_cache(); 
-        for model in apps.get_models():
-            ContentType.objects.get_for_model(model)
+        [ContentType.objects.get_for_model(model) for model in apps.get_models()]
         print('✓ Content types and models cache successfully refreshed.')"
         
         echo "=========================================="
