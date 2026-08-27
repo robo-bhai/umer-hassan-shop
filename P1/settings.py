@@ -1,14 +1,10 @@
 import os
 from pathlib import Path
-from dotenv import load_dotenv
 import socket
 import pymysql
 
 # PyMySQL ko MySQLdb ki tarah install karo
 pymysql.install_as_MySQLdb()
-
-# .env file load karo (local development ke liye)
-load_dotenv()
 
 # ============================================
 # EMAIL SETTINGS
@@ -39,10 +35,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # ============================================
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', os.environ.get('SECRET_KEY', 'fallback-secret-key-only-for-dev'))
 
-# DEBUG - .env se control karo
+# DEBUG - Environment variable se control karo
 DEBUG = os.environ.get('DEBUG', 'False').lower() in ('true', '1', 'yes')
 
-# ALLOWED_HOSTS - comma separated in .env or GitHub
+# ALLOWED_HOSTS
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1,hadi88.online').split(',')
 
 # Automatically local network IP detect karke ALLOWED_HOSTS mein add karna
