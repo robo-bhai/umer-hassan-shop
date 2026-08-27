@@ -3,7 +3,7 @@ name: Django Server Runner & Cloudflare Tunnel
 on:
   push:
     branches: [ "main", "master" ]
-  workflow_dispatch:
+  workflow_dispatch:  # Manual trigger ke liye
 
 jobs:
   run-server:
