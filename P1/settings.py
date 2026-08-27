@@ -1,45 +1,80 @@
 import os
-import ssl
 from pathlib import Path
+from dotenv import load_dotenv
+import socket
+import pymysql
 
+# PyMySQL ko MySQLdb ki tarah install karo
+pymysql.install_as_MySQLdb()
+
+# .env file load karo
+load_dotenv()
+
+# ============================================
+# EMAIL SETTINGS
+# ============================================
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = '1@gmail.com'  
-EMAIL_HOST_PASSWORD = 'ngxm bvjz ttjw gzgu'  
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
 
+# Low Stock Alert Emails
+ALERT_FROM_EMAIL = os.environ.get('ALERT_FROM_EMAIL', EMAIL_HOST_USER)
+ALERT_TO_EMAIL = os.environ.get('ALERT_TO_EMAIL', EMAIL_HOST_USER)
+
+# ============================================
+# ENCRYPTION
+# ============================================
+SALT_KEY = os.environ.get('SALT_KEY', 'default-fallback-key-change-me')
+
+# ============================================
+# BASE DIR
+# ============================================
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# ✅ Default values
-SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-8&*_^%$#@!~`')
-SALT_KEY = os.environ.get('DJANGO_SALT_KEY', 'default-salt-key-12345')
+# ============================================
+# SECURITY SETTINGS
+# ============================================
+SECRET_KEY = os.environ.get('SECRET_KEY', 'fallback-secret-key-only-for-dev')
 
-DEBUG = True
+# DEBUG - .env se control karo
+DEBUG = os.environ.get('DEBUG', 'False').lower() in ('true', '1', 'yes')
 
-SESSION_EXPIRE_AT_BROWSER_CLOSE = True  
-SESSION_COOKIE_AGE = 60 * 30  
-SESSION_COOKIE_SECURE = True       
-SESSION_COOKIE_HTTPONLY = True      
-SESSION_COOKIE_SAMESITE = 'Strict'  
-SESSION_SAVE_EVERY_REQUEST = True
+# ALLOWED_HOSTS - comma separated in .env
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+
+# Automatically local network IP detect karke ALLOWED_HOSTS mein add karna
+try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("8.8.8.8", 80))
+    local_ip = s.getsockname()[0]
+    s.close()
+    
+    if local_ip not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(local_ip)
+except Exception:
+    pass
+
+if '0.0.0.0' not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append('0.0.0.0')
+
+# ============================================
+# SESSION SETTINGS (FIXED)
+# ============================================
+# ✅ Simple DB session - No cache conflict
 SESSION_ENGINE = 'django.contrib.sessions.backends.db'
+SESSION_COOKIE_AGE = 86400  # 24 hours
+SESSION_EXPIRE_AT_BROWSER_CLOSE = False  # Browser close par logout nahi hoga
+SESSION_SAVE_EVERY_REQUEST = True
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'  # Better compatibility
+SESSION_COOKIE_SECURE = False  # Development mode
 
-ALLOWED_HOSTS = ['*']
-
-CSRF_TRUSTED_ORIGINS = [
-    'https://*.trycloudflare.com',
-    'http://*.trycloudflare.com',
-    'https://*.loca.lt',
-    'http://localhost:8000',
-    'http://127.0.0.1:8000',
-    'https://hadi88.online',
-]
-
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-USE_X_FORWARDED_HOST = True
-USE_X_FORWARDED_PORT = True
-
+# ============================================
+# INSTALLED APPS
+# ============================================
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -47,27 +82,44 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.humanize',
+    'app',
+    'dbbackup',
+    'import_export',
+    'axes',
     'ceo_module',
-    'django.contrib.humanize', 
-    'app', 
-    'dbbackup',  
-    'import_export',  
 ]
 
+# ============================================
+# MIDDLEWARE
+# ============================================
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',  # ✅ Pehle hona chahiye
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',  # ✅ Session ke baad
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'axes.middleware.AxesMiddleware',
+    'app.middleware.ShareholderRestrictionMiddleware',
+    'app.middleware.SecurityMiddleware',
 ]
 
+# ============================================
+# AUTHENTICATION
+# ============================================
 AUTHENTICATION_BACKENDS = [
+    'axes.backends.AxesStandaloneBackend',
     'django.contrib.auth.backends.ModelBackend',
 ]
 
+AXES_FAILURE_LIMIT = 5
+AXES_COOLOFF_TIME = 1
+
+# ============================================
+# URLS & TEMPLATES
+# ============================================
 ROOT_URLCONF = 'P1.urls'
 
 TEMPLATES = [
@@ -81,6 +133,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'app.context_processors.system_settings',
             ],
         },
     },
@@ -88,55 +141,190 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'P1.wsgi.application'
 
-# ✅ Database Configuration
-db_host = os.environ.get("DB_HOST") or "mysql-2444d53b-moneymaster370-5b49.g.aivencloud.com"
-db_user = os.environ.get("DB_USER") or "avnadmin"
-db_pass = os.environ.get("DB_PASS") or os.environ.get("DB_PASSWORD") or ""
-db_name = os.environ.get("DB_NAME") or "defaultdb"
-db_port = int(os.environ.get("DB_PORT") or "12300")
-
+# ============================================
+# DATABASE - DYNAMIC MYSQL / SQLITE CONFIGURATION
+# ============================================
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': db_name,
-        'USER': db_user,
-        'PASSWORD': db_pass,
-        'HOST': db_host,
-        'PORT': db_port,
+        'NAME': os.environ.get('DB_NAME', ''),
+        'USER': os.environ.get('DB_USER', ''),
+        'PASSWORD': os.environ.get('DB_PASS', ''),
+        'HOST': os.environ.get('DB_HOST', 'localhost'),
+        'PORT': os.environ.get('DB_PORT', '3306'),
         'OPTIONS': {
-            'ssl': {
-                'check_hostname': False,
-            },
-            'connect_timeout': 30,
             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+            'charset': 'utf8mb4',
         },
+    } if os.environ.get('DB_NAME') else {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
+        'OPTIONS': {
+            'timeout': 30,
+            'isolation_level': None,
+        }
     }
 }
 
+# ============================================
+# FAST DATABASE BACKUP SETTINGS
+# ============================================
+
+# 1. DBBackup Settings
+DBBACKUP_STORAGE = 'django.core.files.storage.FileSystemStorage'
+DBBACKUP_STORAGE_OPTIONS = {
+    'location': BASE_DIR / 'dbbackup',
+    'compress': True,
+}
+DBBACKUP_FORMAT = 'gzip'
+DBBACKUP_COMPRESS_LEVEL = 1
+DBBACKUP_TMP_FILE_MAX_SIZE = 500 * 1024 * 1024
+DBBACKUP_CLEANUP_KEEP = 5
+DBBACKUP_HOSTNAME = 'geek'
+
+# 2. Fast Backup Directory
+BACKUP_DIR = str(BASE_DIR / 'dbbackup')
+os.makedirs(BACKUP_DIR, exist_ok=True)
+
+# 3. Backup Progress File
+BACKUP_PROGRESS_FILE = str(BASE_DIR / 'dbbackup' / 'backup_progress.json')
+
+# ============================================
+# CACHE SETTINGS (For Faster Queries)
+# ============================================
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'unique-snowflake',
+        'TIMEOUT': 300,
+        'OPTIONS': {
+            'MAX_ENTRIES': 1000,
+        }
+    }
+}
+
+# ============================================
+# PASSWORD VALIDATION
+# ============================================
 AUTH_PASSWORD_VALIDATORS = [
-    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',},
-    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',},
-    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',},
-    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',},
+    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
 ]
 
+# ============================================
+# INTERNATIONALIZATION
+# ============================================
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'Asia/Karachi'
 USE_I18N = True
 USE_L10N = True
 USE_TZ = True
 
+# ============================================
+# STATIC FILES
+# ============================================
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
+# ============================================
+# DEFAULT AUTO FIELD
+# ============================================
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Login/Logout URLs
 LOGIN_URL = '/login/'
 LOGIN_REDIRECT_URL = '/'
 LOGOUT_REDIRECT_URL = '/login/'
 
-DBBACKUP_STORAGE = 'django.core.files.storage.FileSystemStorage'
-DBBACKUP_STORAGE_OPTIONS = {'location': BASE_DIR / 'dbbackup'}
-DBBACKUP_HOSTNAME = 'geek'
-DBBACKUP_TMP_FILE_MAX_SIZE = 100*1024*1024
-DBBACKUP_CLEANUP_KEEP = 2
+# ============================================
+# LOGGING (For Backup Monitoring)
+# ============================================
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {asctime} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'backup_file': {
+            'level': 'INFO',
+            'class': 'logging.FileHandler',
+            'filename': BASE_DIR / 'logs/backup.log',
+            'formatter': 'simple',
+        },
+        'console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+        'file': {
+            'level': 'DEBUG',
+            'class': 'logging.FileHandler',
+            'filename': BASE_DIR / 'logs/debug.log',
+            'formatter': 'verbose',
+        },
+    },
+    'root': {
+        'handlers': ['console', 'file'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'app.backup': {
+            'handlers': ['backup_file', 'console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
+
+# ============================================
+# CREATE LOGS DIRECTORY
+# ============================================
+LOGS_DIR = BASE_DIR / 'logs'
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+# ============================================
+# CLOUD UPLOAD SETTINGS
+# ============================================
+RCLONE_ENABLED = True
+RCLONE_REMOTE_NAME = 'gdrive'
+RCLONE_REMOTE_DIR = 'TermuxBackups'
+
+# ============================================
+# PRINT SETTINGS STATUS
+# ============================================
+print("=" * 60)
+print("🚀 System Settings Loaded")
+print("=" * 60)
+db_name_display = DATABASES['default'].get('NAME')
+print(f"📁 Database Engine: {DATABASES['default']['ENGINE']}")
+print(f"📁 Database Name: {db_name_display}")
+print(f"📁 Backup Dir: {BACKUP_DIR}")
+print(f"📁 Logs Dir: {LOGS_DIR}")
+print(f"💾 Cache: {CACHES['default']['BACKEND']}")
+print(f"🗄️ Backup Keep: {DBBACKUP_CLEANUP_KEEP}")
+print(f"🗜️ Backup Compression: {DBBACKUP_COMPRESS_LEVEL}")
+print(f"☁️ Cloud Upload: {'Enabled' if RCLONE_ENABLED else 'Disabled'}")
+print(f"🔐 Session Engine: {SESSION_ENGINE}")
+print(f"⏰ Session Age: {SESSION_COOKIE_AGE} seconds")
+print("=" * 60)
+
+# ============================================
+# EXPORT
+# ============================================
+__all__ = [
+    'BACKUP_DIR',
+    'BACKUP_PROGRESS_FILE',
+    'RCLONE_ENABLED',
+    'RCLONE_REMOTE_NAME',
+    'RCLONE_REMOTE_DIR',
+]
