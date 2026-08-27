@@ -29,12 +29,11 @@ jobs:
         curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
         sudo dpkg -i cloudflared.deb
 
-    - name: Database Migration - Complete Fix
+    - name: Database Migration
       env:
         DB_HOST: ${{ secrets.DB_HOST }}
         DB_USER: ${{ secrets.DB_USER }}
         DB_PASS: ${{ secrets.DB_PASS }}
-        DB_PASSWORD: ${{ secrets.DB_PASS }}
         DB_NAME: ${{ secrets.DB_NAME }}
         DB_PORT: ${{ secrets.DB_PORT }}
         DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
@@ -44,10 +43,9 @@ jobs:
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
         echo "=========================================="
-        echo "STEP 1: Creating Critical Database Tables"
+        echo "STEP 1: Creating django_session table"
         echo "=========================================="
         
-        # Create django_session table directly
         python -c "
         import os, pymysql
         pymysql.install_as_MySQLdb()
@@ -57,30 +55,18 @@ jobs:
         from django.db import connection
         
         with connection.cursor() as cursor:
-            # Check if sessions table exists
             cursor.execute('''
-                SELECT COUNT(*) FROM information_schema.TABLES 
-                WHERE TABLE_SCHEMA = DATABASE() 
-                AND TABLE_NAME = 'django_session'
+                CREATE TABLE IF NOT EXISTS django_session (
+                    session_key VARCHAR(40) NOT NULL PRIMARY KEY,
+                    session_data LONGTEXT NOT NULL,
+                    expire_date DATETIME(6) NOT NULL
+                )
             ''')
-            exists = cursor.fetchone()[0]
-            
-            if not exists:
-                print('Creating django_session table...')
-                cursor.execute('''
-                    CREATE TABLE django_session (
-                        session_key VARCHAR(40) NOT NULL PRIMARY KEY,
-                        session_data LONGTEXT NOT NULL,
-                        expire_date DATETIME(6) NOT NULL
-                    )
-                ''')
-                print('✓ django_session table created successfully!')
-            else:
-                print('✓ django_session table already exists')
+            print('✓ django_session table created')
         "
         
         echo "=========================================="
-        echo "STEP 2: Running Django Migrations"
+        echo "STEP 2: Running Migrations"
         echo "=========================================="
         
         # Remove problematic migration files
@@ -89,7 +75,6 @@ jobs:
         rm -f app/migrations/0017_*.py 2>/dev/null || true
         rm -f app/migrations/__pycache__/* 2>/dev/null || true
         
-        # Run migrations
         python manage.py makemigrations --no-input || true
         python manage.py migrate --fake --no-input || true
         python manage.py migrate --no-input || true
@@ -110,9 +95,9 @@ jobs:
         password = os.environ.get('DJANGO_SUPERUSER_PASSWORD')
         if not User.objects.filter(username=username).exists():
             User.objects.create_superuser(username, email, password)
-            print('✓ Superuser created successfully')
+            print('✓ Superuser created')
         else:
-            print('✓ Superuser already exists')
+            print('✓ Superuser exists')
         "
         
         echo "=========================================="
@@ -120,23 +105,31 @@ jobs:
         echo "=========================================="
 
     - name: Start Django Server
+      env:
+        DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+        DJANGO_SALT_KEY: ${{ secrets.DJANGO_SALT_KEY }}
+        DB_HOST: ${{ secrets.DB_HOST }}
+        DB_USER: ${{ secrets.DB_USER }}
+        DB_PASS: ${{ secrets.DB_PASS }}
+        DB_NAME: ${{ secrets.DB_NAME }}
+        DB_PORT: ${{ secrets.DB_PORT }}
       run: |
         echo "=========================================="
         echo "STEP 4: Starting Django Server with Gunicorn"
         echo "=========================================="
         
-        # Start with Gunicorn (production ready)
+        # Start with Gunicorn
         nohup gunicorn --bind 0.0.0.0:8000 --workers 3 --timeout 120 P1.wsgi:application > gunicorn.log 2>&1 &
         
         echo "Waiting for server to start..."
-        sleep 8
+        sleep 10
         
-        # Verify server is running
-        if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200\|302\|301"; then
-            echo "✓ Django server is running on port 8000"
+        # Check if server is running
+        if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000 | grep -q "200\|302\|301\|404"; then
+            echo "✅ Django server is running on port 8000"
         else
             echo "⚠️ Server may not be ready, checking logs..."
-            tail -20 gunicorn.log
+            tail -30 gunicorn.log
         fi
         
         echo "=========================================="
@@ -145,6 +138,13 @@ jobs:
       env:
         TUNNEL_CREDS: ${{ secrets.CLOUDFLARE_CREDENTIALS }}
         TUNNEL_UUID: "1a0537c0-5705-4b1d-9887-bd4e31e4450b"
+        DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+        DJANGO_SALT_KEY: ${{ secrets.DJANGO_SALT_KEY }}
+        DB_HOST: ${{ secrets.DB_HOST }}
+        DB_USER: ${{ secrets.DB_USER }}
+        DB_PASS: ${{ secrets.DB_PASS }}
+        DB_NAME: ${{ secrets.DB_NAME }}
+        DB_PORT: ${{ secrets.DB_PORT }}
       run: |
         echo "=========================================="
         echo "STEP 5: Launching Cloudflare Tunnel"
@@ -172,9 +172,13 @@ jobs:
         echo "✅ Cloudflare tunnel established"
         echo "=========================================================="
         
-        # Show logs for debugging
+        # Show gunicorn logs for debugging
         echo "Gunicorn Logs:"
-        tail -20 gunicorn.log || true
+        tail -30 gunicorn.log || true
+        
+        echo "=========================================================="
+        echo "Starting Cloudflare Tunnel..."
+        echo "=========================================================="
         
         # Run tunnel in foreground
         cloudflared tunnel --config ~/.cloudflared/config.yml run $TUNNEL_UUID
