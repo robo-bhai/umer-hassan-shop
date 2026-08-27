@@ -21,9 +21,8 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pymysql gunicorn "django-import-export>=3.3.0" django django-dbbackup django-axes reportlab openpyxl pillow python-barcode qrcode
+        pip install pymysql django gunicorn
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-
 
     - name: Install Cloudflared
       run: |
