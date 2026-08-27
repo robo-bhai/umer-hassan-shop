@@ -43,10 +43,10 @@ jobs:
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
         echo "=========================================="
-        echo "STEP 1: Ultra-Safe Database Clean & Re-migration"
+        echo "STEP 1: Auto-Dropping Remote Tables & Fresh Migration"
         echo "=========================================="
         
-        # Safely drop all existing tables using strict string formatting & validation
+        # Automatically drop all existing tables in remote database before migrating
         python -c "import os, pymysql; pymysql.install_as_MySQLdb(); import django; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings'); django.setup(); from django.db import connection; 
         with connection.cursor() as cursor:
             cursor.execute('SET FOREIGN_KEY_CHECKS = 0;')
@@ -56,15 +56,14 @@ jobs:
                 if row and row[0]:
                     t_name = str(row[0]).strip()
                     if t_name:
-                        sql = 'DROP TABLE IF EXISTS `{}`'.format(t_name)
-                        cursor.execute(sql)
+                        cursor.execute('DROP TABLE IF EXISTS `{}`'.format(t_name))
             cursor.execute('SET FOREIGN_KEY_CHECKS = 1;')
-        print('✓ Database tables cleanly dropped without syntax issues.')"
+        print('✓ Remote database successfully wiped clean for fresh setup.')"
         
-        # Clean old migration pycache cache files
+        # Clean old migration cache files
         rm -f app/migrations/__pycache__/* 2>/dev/null || true
         
-        # Run fresh migrations
+        # Run fresh migrations on the clean database
         python manage.py makemigrations --merge --no-input || true
         python manage.py makemigrations --no-input
         python manage.py migrate --no-input
