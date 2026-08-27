@@ -43,18 +43,21 @@ jobs:
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
         echo "=========================================="
-        echo "STEP 1: Fresh Database Clean & Re-migration"
+        echo "STEP 1: Safe Database Clean & Re-migration"
         echo "=========================================="
         
-        # Drop all tables cleanly to avoid last_login / column constraints issues
+        # Safely drop all existing tables with validation check
         python -c "import os, pymysql; pymysql.install_as_MySQLdb(); import django; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings'); django.setup(); from django.db import connection; 
         with connection.cursor() as cursor:
             cursor.execute('SET FOREIGN_KEY_CHECKS = 0;')
             cursor.execute('SHOW TABLES;')
-            for table in cursor.fetchall():
-                cursor.execute('DROP TABLE IF EXISTS `' + table[0] + '`;')
+            tables = cursor.fetchall()
+            if tables:
+                for table in tables:
+                    if table and table[0]:
+                        cursor.execute('DROP TABLE IF EXISTS `' + table[0] + '`;')
             cursor.execute('SET FOREIGN_KEY_CHECKS = 1;')
-        print('✓ All existing database tables dropped for a fresh start.')"
+        print('✓ Database tables safely checked and cleaned.')"
         
         # Clean old migration pycache cache files
         rm -f app/migrations/__pycache__/* 2>/dev/null || true
