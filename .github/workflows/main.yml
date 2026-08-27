@@ -46,7 +46,7 @@ jobs:
         echo "STEP 1: Complete Hard Reset of Database & Migrations"
         echo "=========================================="
         
-        # Hard drop all tables and migration history cleanly
+        # Hard drop all tables and migration history cleanly (Single-line safe execution)
         python -c "import os, pymysql; pymysql.install_as_MySQLdb(); import django; os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'P1.settings'); django.setup(); from django.db import connection; 
         try:
             with connection.cursor() as cursor:
@@ -56,9 +56,7 @@ jobs:
                 if tables:
                     for t in tables:
                         if t and len(t) > 0 and t[0]:
-                            table_name = str(t[0]).strip()
-                            if table_name:
-                                cursor.execute(f'DROP TABLE IF EXISTS `{table_name}`;')
+                            cursor.execute(f'DROP TABLE IF EXISTS `{str(t[0]).strip()}`;')
                 cursor.execute('SET FOREIGN_KEY_CHECKS = 1;')
             print('✓ All remote database tables and history completely wiped.')
         except Exception as e:
