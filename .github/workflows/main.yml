@@ -43,8 +43,11 @@ jobs:
         DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
       run: |
         echo "=========================================="
-        echo "STEP 1: Making & Applying Fresh Migrations"
+        echo "STEP 1: Resolving Conflicts & Applying Migrations"
         echo "=========================================="
+        
+        # Merge conflicting migrations automatically if any exist
+        python manage.py makemigrations --merge --no-input || true
         
         python manage.py makemigrations --no-input
         python manage.py migrate --no-input
