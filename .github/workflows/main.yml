@@ -66,11 +66,14 @@ jobs:
         "
         
         echo "=========================================="
-        echo "STEP 2: Running Migrations properly"
+        echo "STEP 2: Handling Migration Conflicts & Running Migrations"
         echo "=========================================="
         
-        # Clean old cache to prevent schema mismatch
+        # Clean old cache
         rm -f app/migrations/__pycache__/* 2>/dev/null || true
+        
+        # Automatically resolve and merge conflicting migration branches if any exist
+        python manage.py makemigrations --merge --no-input || true
         
         # Run standard migrations cleanly
         python manage.py makemigrations --no-input
